@@ -20,22 +20,6 @@ pub struct HashMap<K, V, S = DefaultHashBuilder, A: Allocator + Clone = Global> 
     pub(crate) table: RawTable<(K, V), A>,
 }
 
-impl<K: Clone, V: Clone, S: Clone, A: Allocator + Clone> Clone for HashMap<K, V, S, A> {
-    fn clone(&self) -> Self {
-        HashMap {
-            hash_builder: self.hash_builder.clone(),
-            table: self.table.clone(),
-        }
-    }
-
-    fn clone_from(&mut self, source: &Self) {
-        self.table.clone_from(&source.table);
-
-        // Update hash_builder only if we successfully cloned all elements.
-        self.hash_builder.clone_from(&source.hash_builder);
-    }
-}
-
 /// Ensures that a single closure type across uses of this which, in turn prevents multiple
 /// instances of any functions like RawTable::reserve from being generated
 #[cfg_attr(feature = "inline-more", inline)]
@@ -3387,35 +3371,6 @@ mod test_map {
         assert_eq!(*m.get(&2).unwrap(), 4);
     }
 
-    #[test]
-    fn test_clone() {
-        let mut m = HashMap::new();
-        assert_eq!(m.len(), 0);
-        assert!(m.insert(1, 2).is_none());
-        assert_eq!(m.len(), 1);
-        assert!(m.insert(2, 4).is_none());
-        assert_eq!(m.len(), 2);
-        let m2 = m.clone();
-        assert_eq!(*m2.get(&1).unwrap(), 2);
-        assert_eq!(*m2.get(&2).unwrap(), 4);
-        assert_eq!(m2.len(), 2);
-    }
-
-    #[test]
-    fn test_clone_from() {
-        let mut m = HashMap::new();
-        let mut m2 = HashMap::new();
-        assert_eq!(m.len(), 0);
-        assert!(m.insert(1, 2).is_none());
-        assert_eq!(m.len(), 1);
-        assert!(m.insert(2, 4).is_none());
-        assert_eq!(m.len(), 2);
-        m2.clone_from(&m);
-        assert_eq!(*m2.get(&1).unwrap(), 2);
-        assert_eq!(*m2.get(&2).unwrap(), 4);
-        assert_eq!(m2.len(), 2);
-    }
-
     thread_local! { static DROP_VECTOR: RefCell<Vec<i32>> = RefCell::new(Vec::new()) }
 
     #[derive(Hash, PartialEq, Eq)]
@@ -3498,67 +3453,6 @@ mod test_map {
                 }
             });
         }
-
-        DROP_VECTOR.with(|v| {
-            for i in 0..200 {
-                assert_eq!(v.borrow()[i], 0);
-            }
-        });
-    }
-
-    #[test]
-    fn test_into_iter_drops() {
-        DROP_VECTOR.with(|v| {
-            *v.borrow_mut() = vec![0; 200];
-        });
-
-        let hm = {
-            let mut hm = HashMap::new();
-
-            DROP_VECTOR.with(|v| {
-                for i in 0..200 {
-                    assert_eq!(v.borrow()[i], 0);
-                }
-            });
-
-            for i in 0..100 {
-                let d1 = Droppable::new(i);
-                let d2 = Droppable::new(i + 100);
-                hm.insert(d1, d2);
-            }
-
-            DROP_VECTOR.with(|v| {
-                for i in 0..200 {
-                    assert_eq!(v.borrow()[i], 1);
-                }
-            });
-
-            hm
-        };
-
-        // By the way, ensure that cloning doesn't screw up the dropping.
-        drop(hm.clone());
-
-        {
-            let mut half = hm.into_iter().take(50);
-
-            DROP_VECTOR.with(|v| {
-                for i in 0..200 {
-                    assert_eq!(v.borrow()[i], 1);
-                }
-            });
-
-            for _ in half.by_ref() {}
-
-            DROP_VECTOR.with(|v| {
-                let nk = (0..100).filter(|&i| v.borrow()[i] == 1).count();
-
-                let nv = (0..100).filter(|&i| v.borrow()[i + 100] == 1).count();
-
-                assert_eq!(nk, 50);
-                assert_eq!(nv, 50);
-            });
-        };
 
         DROP_VECTOR.with(|v| {
             for i in 0..200 {
@@ -4691,29 +4585,6 @@ mod test_map {
             // just for safety:
             assert_eq!(m.table.len(), left);
         }
-    }
-
-    #[test]
-    fn test_const_with_hasher() {
-        use core::hash::BuildHasher;
-        use std::collections::hash_map::DefaultHasher;
-
-        #[derive(Clone)]
-        struct MyHasher;
-        impl BuildHasher for MyHasher {
-            type Hasher = DefaultHasher;
-
-            fn build_hasher(&self) -> DefaultHasher {
-                DefaultHasher::new()
-            }
-        }
-
-        const EMPTY_MAP: HashMap<u32, std::string::String, MyHasher> =
-            HashMap::with_hasher(MyHasher);
-
-        let mut map = EMPTY_MAP.clone();
-        map.insert(17, "seventeen".to_owned());
-        assert_eq!("seventeen", map[&17]);
     }
 
     #[test]
