@@ -21,6 +21,8 @@ mod macros;
 mod scopeguard;
 pub mod raw;
 
+pub mod map;
+
 /// The error type for `try_reserve` methods.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TryReserveError {
