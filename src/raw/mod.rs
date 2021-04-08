@@ -1,15 +1,10 @@
 use crate::alloc::alloc::{handle_alloc_error, Layout};
 use crate::scopeguard::guard;
 use crate::TryReserveError;
-#[cfg(feature = "nightly")]
-use crate::UnavailableMutError;
 use core::hint;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::mem;
-use core::mem::ManuallyDrop;
-#[cfg(feature = "nightly")]
-use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
 cfg_if! {
@@ -525,114 +520,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         Bucket::from_base_index(self.data_end(), index)
     }
 
-    /// Erases an element from the table without dropping it.
-    #[cfg_attr(feature = "inline-more", inline)]
-    #[deprecated(since = "0.8.1", note = "use erase or remove instead")]
-    pub unsafe fn erase_no_drop(&mut self, item: &Bucket<T>) {
-        let index = self.bucket_index(item);
-        self.table.erase(index)
-    }
-
-    /// Erases an element from the table, dropping it in place.
-    #[cfg_attr(feature = "inline-more", inline)]
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(deprecated)]
-    pub unsafe fn erase(&mut self, item: Bucket<T>) {
-        // Erase the element from the table first since drop might panic.
-        self.erase_no_drop(&item);
-        item.drop();
-    }
-
-    /// Finds and erases an element from the table, dropping it in place.
-    /// Returns true if an element was found.
-    #[cfg(feature = "raw")]
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn erase_entry(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> bool {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        if let Some(bucket) = self.find(hash, eq) {
-            unsafe { self.erase(bucket) };
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Removes an element from the table, returning it.
-    #[cfg_attr(feature = "inline-more", inline)]
-    #[allow(clippy::needless_pass_by_value)]
-    #[allow(deprecated)]
-    pub unsafe fn remove(&mut self, item: Bucket<T>) -> T {
-        self.erase_no_drop(&item);
-        item.read()
-    }
-
-    /// Finds and removes an element from the table, returning it.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn remove_entry(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hash, eq) {
-            Some(bucket) => Some(unsafe { self.remove(bucket) }),
-            None => None,
-        }
-    }
-
-    /// Marks all table buckets as empty without dropping their contents.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn clear_no_drop(&mut self) {
-        self.table.clear_no_drop()
-    }
-
-    /// Removes all elements from the table without freeing the backing memory.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn clear(&mut self) {
-        // Ensure that the table is reset even if one of the drops panic
-        let mut self_ = guard(self, |self_| self_.clear_no_drop());
-        unsafe {
-            self_.drop_elements();
-        }
-    }
-
     unsafe fn drop_elements(&mut self) {
         if mem::needs_drop::<T>() && self.len() != 0 {
             for item in self.iter() {
                 item.drop();
-            }
-        }
-    }
-
-    /// Shrinks the table to fit `max(self.len(), min_size)` elements.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn shrink_to(&mut self, min_size: usize, hasher: impl Fn(&T) -> u64) {
-        // Calculate the minimal number of elements that we need to reserve
-        // space for.
-        let min_size = usize::max(self.table.items, min_size);
-        if min_size == 0 {
-            *self = Self::new_in(self.table.alloc.clone());
-            return;
-        }
-
-        // Calculate the number of buckets that we need for this number of
-        // elements. If the calculation overflows then the requested bucket
-        // count must be larger than what we have right and nothing needs to be
-        // done.
-        let min_buckets = match capacity_to_buckets(min_size) {
-            Some(buckets) => buckets,
-            None => return,
-        };
-
-        // If we have more buckets than we need, shrink the table.
-        if min_buckets < self.buckets() {
-            // Fast path if the table is empty
-            if self.table.items == 0 {
-                *self = Self::with_capacity_in(min_size, self.table.alloc.clone())
-            } else {
-                // Avoid `Result::unwrap_or_else` because it bloats LLVM IR.
-                if self
-                    .resize(min_size, hasher, Fallibility::Infallible)
-                    .is_err()
-                {
-                    unsafe { hint::unreachable_unchecked() }
-                }
             }
         }
     }
@@ -885,33 +776,6 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         bucket
     }
 
-    /// Temporary removes a bucket, applying the given function to the removed
-    /// element and optionally put back the returned value in the same bucket.
-    ///
-    /// Returns `true` if the bucket still contains an element
-    ///
-    /// This does not check if the given bucket is actually occupied.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub unsafe fn replace_bucket_with<F>(&mut self, bucket: Bucket<T>, f: F) -> bool
-    where
-        F: FnOnce(T) -> Option<T>,
-    {
-        let index = self.bucket_index(&bucket);
-        let old_ctrl = *self.table.ctrl(index);
-        debug_assert!(is_full(old_ctrl));
-        let old_growth_left = self.table.growth_left;
-        let item = self.remove(bucket);
-        if let Some(new_item) = f(item) {
-            self.table.growth_left = old_growth_left;
-            self.table.set_ctrl(index, old_ctrl);
-            self.table.items += 1;
-            self.bucket(index).write(new_item);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Searches for an element in the table.
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
@@ -944,64 +808,6 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             Some(bucket) => Some(unsafe { bucket.as_mut() }),
             None => None,
         }
-    }
-
-    /// Attempts to get mutable references to `N` entries in the table at once.
-    ///
-    /// Returns an array of length `N` with the results of each query. For soundness,
-    /// at most one mutable reference will be returned to any entry. An
-    /// `Err(UnavailableMutError::Duplicate(i))` in the returned array indicates that a suitable
-    /// entry exists, but a mutable reference to it already occurs at index `i` in the returned
-    /// array.
-    ///
-    /// The `eq` argument should be a closure such that `eq(i, k)` returns true if `k` is equal to
-    /// the `i`th key to be looked up.
-    ///
-    /// This method is available only if the `nightly` feature is enabled.
-    #[cfg(feature = "nightly")]
-    pub fn get_each_mut<const N: usize>(
-        &mut self,
-        hashes: [u64; N],
-        mut eq: impl FnMut(usize, &T) -> bool,
-    ) -> [Result<&'_ mut T, UnavailableMutError>; N] {
-        // Collect the requested buckets.
-        // TODO use `MaybeUninit::uninit_array` here instead once that's stable.
-        let mut buckets: [MaybeUninit<Option<Bucket<T>>>; N] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        for i in 0..N {
-            buckets[i] = MaybeUninit::new(self.find(hashes[i], |k| eq(i, k)));
-        }
-        let buckets: [Option<Bucket<T>>; N] = unsafe { MaybeUninit::array_assume_init(buckets) };
-
-        // Walk through the buckets, checking for duplicates and building up the output array.
-        // TODO use `MaybeUninit::uninit_array` here instead once that's stable.
-        let mut out: [MaybeUninit<Result<&'_ mut T, UnavailableMutError>>; N] =
-            unsafe { MaybeUninit::uninit().assume_init() };
-        for i in 0..N {
-            out[i] = MaybeUninit::new(
-                #[allow(clippy::never_loop)]
-                'outer: loop {
-                    for j in 0..i {
-                        match (&buckets[j], &buckets[i]) {
-                            // These two buckets are the same, and we can't safely return a second
-                            // mutable reference to the same entry.
-                            (Some(prev), Some(cur)) if prev.as_ptr() == cur.as_ptr() => {
-                                break 'outer Err(UnavailableMutError::Duplicate(j));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // This bucket is distinct from all previous buckets (or it doesn't exist), so
-                    // we're clear to return the result of the lookup.
-                    break match &buckets[i] {
-                        None => Err(UnavailableMutError::Absent),
-                        Some(bkt) => unsafe { Ok(bkt.as_mut()) },
-                    };
-                },
-            )
-        }
-
-        unsafe { MaybeUninit::array_assume_init(out) }
     }
 
     /// Returns the number of elements the map can hold without reallocating.
@@ -1048,34 +854,6 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     #[cfg_attr(feature = "inline-more", inline)]
     pub unsafe fn iter_hash(&self, hash: u64) -> RawIterHash<'_, T, A> {
         RawIterHash::new(self, hash)
-    }
-
-    /// Returns an iterator which removes all elements from the table without
-    /// freeing the memory.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn drain(&mut self) -> RawDrain<'_, T, A> {
-        unsafe {
-            let iter = self.iter();
-            self.drain_iter_from(iter)
-        }
-    }
-
-    /// Returns an iterator which removes all elements from the table without
-    /// freeing the memory.
-    ///
-    /// Iteration starts at the provided iterator's current location.
-    ///
-    /// It is up to the caller to ensure that the iterator is valid for this
-    /// `RawTable` and covers all items that remain in the table.
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub unsafe fn drain_iter_from(&mut self, iter: RawIter<T>) -> RawDrain<'_, T, A> {
-        debug_assert_eq!(iter.len(), self.len());
-        RawDrain {
-            iter,
-            table: ManuallyDrop::new(mem::replace(self, Self::new_in(self.table.alloc.clone()))),
-            orig_table: NonNull::from(self),
-            marker: PhantomData,
-        }
     }
 
     /// Returns an iterator which consumes all elements from the table.
@@ -1424,226 +1202,6 @@ impl<A: Allocator + Clone> RawTableInner<A> {
             NonNull::new_unchecked(self.ctrl.as_ptr().sub(ctrl_offset)),
             layout,
         );
-    }
-
-    /// Marks all table buckets as empty without dropping their contents.
-    #[inline]
-    fn clear_no_drop(&mut self) {
-        if !self.is_empty_singleton() {
-            unsafe {
-                self.ctrl(0).write_bytes(EMPTY, self.num_ctrl_bytes());
-            }
-        }
-        self.items = 0;
-        self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
-    }
-
-    #[inline]
-    unsafe fn erase(&mut self, index: usize) {
-        debug_assert!(is_full(*self.ctrl(index)));
-        let index_before = index.wrapping_sub(Group::WIDTH) & self.bucket_mask;
-        let empty_before = Group::load(self.ctrl(index_before)).match_empty();
-        let empty_after = Group::load(self.ctrl(index)).match_empty();
-
-        // If we are inside a continuous block of Group::WIDTH full or deleted
-        // cells then a probe window may have seen a full block when trying to
-        // insert. We therefore need to keep that block non-empty so that
-        // lookups will continue searching to the next probe window.
-        //
-        // Note that in this context `leading_zeros` refers to the bytes at the
-        // end of a group, while `trailing_zeros` refers to the bytes at the
-        // begining of a group.
-        let ctrl = if empty_before.leading_zeros() + empty_after.trailing_zeros() >= Group::WIDTH {
-            DELETED
-        } else {
-            self.growth_left += 1;
-            EMPTY
-        };
-        self.set_ctrl(index, ctrl);
-        self.items -= 1;
-    }
-}
-
-impl<T: Clone, A: Allocator + Clone> Clone for RawTable<T, A> {
-    fn clone(&self) -> Self {
-        if self.table.is_empty_singleton() {
-            Self::new_in(self.table.alloc.clone())
-        } else {
-            unsafe {
-                let mut new_table = ManuallyDrop::new(
-                    // Avoid `Result::ok_or_else` because it bloats LLVM IR.
-                    match Self::new_uninitialized(
-                        self.table.alloc.clone(),
-                        self.table.buckets(),
-                        Fallibility::Infallible,
-                    ) {
-                        Ok(table) => table,
-                        Err(_) => hint::unreachable_unchecked(),
-                    },
-                );
-
-                new_table.clone_from_spec(self, |new_table| {
-                    // We need to free the memory allocated for the new table.
-                    new_table.free_buckets();
-                });
-
-                // Return the newly created table.
-                ManuallyDrop::into_inner(new_table)
-            }
-        }
-    }
-
-    fn clone_from(&mut self, source: &Self) {
-        if source.table.is_empty_singleton() {
-            *self = Self::new_in(self.table.alloc.clone());
-        } else {
-            unsafe {
-                // First, drop all our elements without clearing the control bytes.
-                self.drop_elements();
-
-                // If necessary, resize our table to match the source.
-                if self.buckets() != source.buckets() {
-                    // Skip our drop by using ptr::write.
-                    if !self.table.is_empty_singleton() {
-                        self.free_buckets();
-                    }
-                    (self as *mut Self).write(
-                        // Avoid `Result::unwrap_or_else` because it bloats LLVM IR.
-                        match Self::new_uninitialized(
-                            self.table.alloc.clone(),
-                            source.buckets(),
-                            Fallibility::Infallible,
-                        ) {
-                            Ok(table) => table,
-                            Err(_) => hint::unreachable_unchecked(),
-                        },
-                    );
-                }
-
-                self.clone_from_spec(source, |self_| {
-                    // We need to leave the table in an empty state.
-                    self_.clear_no_drop()
-                });
-            }
-        }
-    }
-}
-
-/// Specialization of `clone_from` for `Copy` types
-trait RawTableClone {
-    unsafe fn clone_from_spec(&mut self, source: &Self, on_panic: impl FnMut(&mut Self));
-}
-impl<T: Clone, A: Allocator + Clone> RawTableClone for RawTable<T, A> {
-    #[cfg_attr(feature = "inline-more", inline)]
-    default_fn! {
-        unsafe fn clone_from_spec(&mut self, source: &Self, on_panic: impl FnMut(&mut Self)) {
-            self.clone_from_impl(source, on_panic);
-        }
-    }
-}
-#[cfg(feature = "nightly")]
-impl<T: Copy, A: Allocator + Clone> RawTableClone for RawTable<T, A> {
-    #[cfg_attr(feature = "inline-more", inline)]
-    unsafe fn clone_from_spec(&mut self, source: &Self, _on_panic: impl FnMut(&mut Self)) {
-        source
-            .table
-            .ctrl(0)
-            .copy_to_nonoverlapping(self.table.ctrl(0), self.table.num_ctrl_bytes());
-        source
-            .data_start()
-            .copy_to_nonoverlapping(self.data_start(), self.table.buckets());
-
-        self.table.items = source.table.items;
-        self.table.growth_left = source.table.growth_left;
-    }
-}
-
-impl<T: Clone, A: Allocator + Clone> RawTable<T, A> {
-    /// Common code for clone and clone_from. Assumes `self.buckets() == source.buckets()`.
-    #[cfg_attr(feature = "inline-more", inline)]
-    unsafe fn clone_from_impl(&mut self, source: &Self, mut on_panic: impl FnMut(&mut Self)) {
-        // Copy the control bytes unchanged. We do this in a single pass
-        source
-            .table
-            .ctrl(0)
-            .copy_to_nonoverlapping(self.table.ctrl(0), self.table.num_ctrl_bytes());
-
-        // The cloning of elements may panic, in which case we need
-        // to make sure we drop only the elements that have been
-        // cloned so far.
-        let mut guard = guard((0, &mut *self), |(index, self_)| {
-            if mem::needs_drop::<T>() && self_.len() != 0 {
-                for i in 0..=*index {
-                    if is_full(*self_.table.ctrl(i)) {
-                        self_.bucket(i).drop();
-                    }
-                }
-            }
-
-            // Depending on whether we were called from clone or clone_from, we
-            // either need to free the memory for the destination table or just
-            // clear the control bytes.
-            on_panic(self_);
-        });
-
-        for from in source.iter() {
-            let index = source.bucket_index(&from);
-            let to = guard.1.bucket(index);
-            to.write(from.as_ref().clone());
-
-            // Update the index in case we need to unwind.
-            guard.0 = index;
-        }
-
-        // Successfully cloned all items, no need to clean up.
-        mem::forget(guard);
-
-        self.table.items = source.table.items;
-        self.table.growth_left = source.table.growth_left;
-    }
-
-    /// Variant of `clone_from` to use when a hasher is available.
-    #[cfg(feature = "raw")]
-    pub fn clone_from_with_hasher(&mut self, source: &Self, hasher: impl Fn(&T) -> u64) {
-        // If we have enough capacity in the table, just clear it and insert
-        // elements one by one. We don't do this if we have the same number of
-        // buckets as the source since we can just copy the contents directly
-        // in that case.
-        if self.table.buckets() != source.table.buckets()
-            && bucket_mask_to_capacity(self.table.bucket_mask) >= source.len()
-        {
-            self.clear();
-
-            let guard_self = guard(&mut *self, |self_| {
-                // Clear the partially copied table if a panic occurs, otherwise
-                // items and growth_left will be out of sync with the contents
-                // of the table.
-                self_.clear();
-            });
-
-            unsafe {
-                for item in source.iter() {
-                    // This may panic.
-                    let item = item.as_ref().clone();
-                    let hash = hasher(&item);
-
-                    // We can use a simpler version of insert() here since:
-                    // - there are no DELETED entries.
-                    // - we know there is enough space in the table.
-                    // - all elements are unique.
-                    let (index, _) = guard_self.table.prepare_insert_slot(hash);
-                    guard_self.bucket(index).write(item);
-                }
-            }
-
-            // Successfully cloned all items, no need to clean up.
-            mem::forget(guard_self);
-
-            self.table.items = source.table.items;
-            self.table.growth_left -= source.table.items;
-        } else {
-            self.clone_from(source);
-        }
     }
 }
 
@@ -2078,70 +1636,6 @@ impl<T, A: Allocator + Clone> Iterator for RawIntoIter<T, A> {
 
 impl<T, A: Allocator + Clone> ExactSizeIterator for RawIntoIter<T, A> {}
 impl<T, A: Allocator + Clone> FusedIterator for RawIntoIter<T, A> {}
-
-/// Iterator which consumes elements without freeing the table storage.
-pub struct RawDrain<'a, T, A: Allocator + Clone = Global> {
-    iter: RawIter<T>,
-
-    // The table is moved into the iterator for the duration of the drain. This
-    // ensures that an empty table is left if the drain iterator is leaked
-    // without dropping.
-    table: ManuallyDrop<RawTable<T, A>>,
-    orig_table: NonNull<RawTable<T, A>>,
-
-    // We don't use a &'a mut RawTable<T> because we want RawDrain to be
-    // covariant over T.
-    marker: PhantomData<&'a RawTable<T, A>>,
-}
-
-impl<T, A: Allocator + Clone> RawDrain<'_, T, A> {
-    #[cfg_attr(feature = "inline-more", inline)]
-    pub fn iter(&self) -> RawIter<T> {
-        self.iter.clone()
-    }
-}
-
-unsafe impl<T, A: Allocator + Copy> Send for RawDrain<'_, T, A> where T: Send {}
-unsafe impl<T, A: Allocator + Copy> Sync for RawDrain<'_, T, A> where T: Sync {}
-
-impl<T, A: Allocator + Clone> Drop for RawDrain<'_, T, A> {
-    #[cfg_attr(feature = "inline-more", inline)]
-    fn drop(&mut self) {
-        unsafe {
-            // Drop all remaining elements. Note that this may panic.
-            self.iter.drop_elements();
-
-            // Reset the contents of the table now that all elements have been
-            // dropped.
-            self.table.clear_no_drop();
-
-            // Move the now empty table back to its original location.
-            self.orig_table
-                .as_ptr()
-                .copy_from_nonoverlapping(&*self.table, 1);
-        }
-    }
-}
-
-impl<T, A: Allocator + Clone> Iterator for RawDrain<'_, T, A> {
-    type Item = T;
-
-    #[cfg_attr(feature = "inline-more", inline)]
-    fn next(&mut self) -> Option<T> {
-        unsafe {
-            let item = self.iter.next()?;
-            Some(item.read())
-        }
-    }
-
-    #[cfg_attr(feature = "inline-more", inline)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-impl<T, A: Allocator + Clone> ExactSizeIterator for RawDrain<'_, T, A> {}
-impl<T, A: Allocator + Clone> FusedIterator for RawDrain<'_, T, A> {}
 
 /// Iterator over occupied buckets that could match a given hash.
 ///

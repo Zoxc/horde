@@ -19,7 +19,7 @@ extern crate alloc;
 mod macros;
 
 mod scopeguard;
-pub mod raw;
+mod raw;
 
 pub mod map;
 
