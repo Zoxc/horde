@@ -7,7 +7,7 @@ use crate::{
 };
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
@@ -367,8 +367,7 @@ impl<T> TableRef<T> {
 
     #[inline]
     pub unsafe fn bucket_before_first(&self) -> *mut T {
-        let info_offet = Self::layout(self.info().buckets()).unwrap_unchecked().1;
-        (self.data.as_ptr() as *const u8).sub(info_offet) as *mut T
+        self.bucket_past_last().sub(self.info().buckets())
     }
 
     #[inline]
@@ -460,12 +459,25 @@ impl<T: Clone> RawTable<T> {
         }
     }
 
+    #[inline]
+    pub fn mutex(&self) -> &Mutex<()> {
+        &self.lock
+    }
+
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
-        let _lock = self.lock.lock();
+    pub fn insert_with_guard(
+        &self,
+        hash: u64,
+        value: T,
+        hasher: impl Fn(&T) -> u64,
+        guard: &mut MutexGuard<'_, ()>,
+    ) -> Bucket<T> {
+        // Verify that we are locked
+        assert_eq!(&self.lock as *const _, MutexGuard::mutex(guard) as *const _);
+
         let mut table = self.current.load();
 
         unsafe {
@@ -482,6 +494,14 @@ impl<T: Clone> RawTable<T> {
 
             bucket
         }
+    }
+
+    /// Inserts a new element into the table, and returns its raw bucket.
+    ///
+    /// This does not check if the given element already exists in the table.
+    #[inline]
+    pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
+        self.insert_with_guard(hash, value, hasher, &mut self.lock.lock())
     }
 
     /// Out-of-line slow path for `reserve` and `try_reserve`.
