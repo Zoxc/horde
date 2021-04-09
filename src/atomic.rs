@@ -433,7 +433,7 @@ unsafe impl<#[may_dangle] T> Drop for RawTable<T> {
     }
 }
 
-impl<T: Clone> RawTable<T> {
+impl<T> RawTable<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
