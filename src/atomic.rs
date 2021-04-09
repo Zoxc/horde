@@ -1,15 +1,15 @@
-use crate::raw::{
-    bitmask::BitMaskIter,
-    imp::{BitMaskWord, Group},
+use crate::{
+    raw::{bitmask::BitMaskIter, imp::Group},
+    OnDrop,
 };
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{lock_api::RawMutex as RawMutex_, RawMutex};
 use std::{
-    alloc::{self, handle_alloc_error, Allocator, Global, Layout, LayoutError},
+    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     intrinsics::{likely, unlikely},
     marker::PhantomData,
-    mem, ptr,
+    mem,
 };
 
 /// A reference to a hash table bucket containing a `T`.
@@ -81,6 +81,7 @@ impl<T> Bucket<T> {
 
 /// A raw hash table with an unsafe API.
 pub struct RawTable<T> {
+    // FIXME: Replace with a static dummy table as initialization?
     current: AtomicCell<Option<TableRef<T>>>,
 
     lock: RawMutex,
@@ -125,6 +126,95 @@ impl TableInfo {
         let ctrl = (self as *const TableInfo as *mut u8).add(offset);
 
         ctrl.add(index)
+    }
+
+    /// Sets a control byte, and possibly also the replicated control byte at
+    /// the end of the array.
+    #[inline]
+    unsafe fn set_ctrl(&self, index: usize, ctrl: u8) {
+        // Replicate the first Group::WIDTH control bytes at the end of
+        // the array without using a branch:
+        // - If index >= Group::WIDTH then index == index2.
+        // - Otherwise index2 == self.bucket_mask + 1 + index.
+        //
+        // The very last replicated control byte is never actually read because
+        // we mask the initial index for unaligned loads, but we write it
+        // anyways because it makes the set_ctrl implementation simpler.
+        //
+        // If there are fewer buckets than Group::WIDTH then this code will
+        // replicate the buckets at the end of the trailing group. For example
+        // with 2 buckets and a group size of 4, the control bytes will look
+        // like this:
+        //
+        //     Real    |             Replicated
+        // ---------------------------------------------
+        // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
+        // ---------------------------------------------
+        let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
+
+        *self.ctrl(index) = ctrl;
+        *self.ctrl(index2) = ctrl;
+    }
+
+    /// Sets a control byte to the hash, and possibly also the replicated control byte at
+    /// the end of the array.
+    #[inline]
+    unsafe fn set_ctrl_h2(&self, index: usize, hash: u64) {
+        self.set_ctrl(index, h2(hash))
+    }
+
+    #[inline]
+    unsafe fn record_item_insert_at(&mut self, index: usize, old_ctrl: u8, hash: u64) {
+        self.growth_left -= special_is_empty(old_ctrl) as usize;
+        self.set_ctrl_h2(index, hash);
+        self.items += 1;
+    }
+
+    /// Searches for an empty or deleted bucket which is suitable for inserting
+    /// a new element and sets the hash for that slot.
+    ///
+    /// There must be at least 1 empty bucket in the table.
+    #[inline]
+    unsafe fn prepare_insert_slot(&self, hash: u64) -> (usize, u8) {
+        let index = self.find_insert_slot(hash);
+        let old_ctrl = *self.ctrl(index);
+        self.set_ctrl_h2(index, hash);
+        (index, old_ctrl)
+    }
+
+    /// Searches for an empty or deleted bucket which is suitable for inserting
+    /// a new element.
+    ///
+    /// There must be at least 1 empty bucket in the table.
+    #[inline]
+    unsafe fn find_insert_slot(&self, hash: u64) -> usize {
+        let mut probe_seq = self.probe_seq(hash);
+        loop {
+            let group = Group::load(self.ctrl(probe_seq.pos));
+            if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
+                let result = (probe_seq.pos + bit) & self.bucket_mask;
+
+                // In tables smaller than the group width, trailing control
+                // bytes outside the range of the table are filled with
+                // EMPTY entries. These will unfortunately trigger a
+                // match, but once masked may point to a full bucket that
+                // is already occupied. We detect this situation here and
+                // perform a second scan starting at the begining of the
+                // table. This second scan is guaranteed to find an empty
+                // slot (due to the load factor) before hitting the trailing
+                // control bytes (containing EMPTY).
+                if unlikely(is_full(*self.ctrl(result))) {
+                    debug_assert!(self.bucket_mask < Group::WIDTH);
+                    debug_assert_ne!(probe_seq.pos, 0);
+                    return Group::load_aligned(self.ctrl(0))
+                        .match_empty_or_deleted()
+                        .lowest_set_bit_nonzero();
+                }
+
+                return result;
+            }
+            probe_seq.move_next(self.bucket_mask);
+        }
     }
 
     /// Returns an iterator-like object for a probe sequence on the table.
@@ -199,8 +289,20 @@ impl<T> TableRef<T> {
         result
     }
 
+    #[inline]
+    fn free(self) {
+        Global.deallocate(
+            NonNull::new_unchecked(self.bucket(0).as_ptr() as *mut u8),
+            Self::layout(self.info().buckets()).unwrap_unchecked().0,
+        )
+    }
+
     unsafe fn info(&self) -> &TableInfo {
         self.data.as_ref()
+    }
+
+    unsafe fn info_mut(&mut self) -> &mut TableInfo {
+        self.data.as_mut()
     }
 
     /// Returns a pointer to an element in the table.
@@ -260,46 +362,92 @@ impl<T: Clone> RawTable<T> {
             None
         }
     }
-    /*
+
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> NonNull<T> {
+    pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
         let table = self.current.load();
 
-        let table = if unlikely(table.is_none()) {
-            self.reserve_rehash(1, hasher)
+        let mut table = if unlikely(table.is_none()) {
+            self.reserve(1, &hasher)
         } else {
             table.unwrap()
         };
 
-        table.find_insert_slot(hash);
-        /*
         unsafe {
-            let mut index = self.table.find_insert_slot(hash);
+            let mut index = table.info().find_insert_slot(hash);
 
             // We can avoid growing the table once we have reached our load
             // factor if we are replacing a tombstone. This works since the
             // number of EMPTY slots does not change in this case.
-            let old_ctrl = *self.table.ctrl(index);
-            if unlikely(self.table.growth_left == 0 && special_is_empty(old_ctrl)) {
-                self.reserve(1, hasher);
-                index = self.table.find_insert_slot(hash);
+            let old_ctrl = *table.info().ctrl(index);
+            if unlikely(table.info().growth_left == 0 && special_is_empty(old_ctrl)) {
+                table = self.reserve(1, &hasher);
+                index = table.info().find_insert_slot(hash);
             }
 
-            self.table.record_item_insert_at(index, old_ctrl, hash);
+            table
+                .info_mut()
+                .record_item_insert_at(index, old_ctrl, hash);
 
-            let bucket = self.bucket(index);
+            let bucket = table.bucket(index);
             bucket.write(value);
             bucket
-        }*/
+        }
     }
 
     /// Out-of-line slow path for `reserve` and `try_reserve`.
     #[cold]
     #[inline(never)]
-    fn reserve_rehash(&self, additional: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {}*/
+    fn reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
+        let table = self.current.load().unwrap();
+        // Avoid `Option::ok_or_else` because it bloats LLVM IR.
+        let new_items = match unsafe { table.info() }.items.checked_add(additional) {
+            Some(new_items) => new_items,
+            None => panic!("capacity overflow"),
+        };
+
+        let full_capacity = bucket_mask_to_capacity(unsafe { table.info().bucket_mask });
+
+        // Otherwise, conservatively resize to at least the next size up
+        // to avoid churning deletes into frequent rehashes.
+        self.resize(usize::max(new_items, full_capacity + 1), hasher)
+    }
+
+    /// Allocates a new table of a different size and moves the contents of the
+    /// current table into it.
+    fn resize(&mut self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+        let table = self.current.load().unwrap();
+        unsafe {
+            debug_assert!(table.info().items <= capacity);
+        }
+        let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
+
+        unsafe {
+            let mut new_table = TableRef::allocate(capacity);
+
+            let guard = OnDrop(|| new_table.free());
+
+            // Copy all elements to the new table.
+            for item in self.iter() {
+                // This may panic.
+                let hash = hasher(item.as_ref());
+
+                // We can use a simpler version of insert() here since:
+                // - there are no DELETED entries.
+                // - we know there is enough space in the table.
+                // - all elements are unique.
+                let (index, _) = new_table.info().prepare_insert_slot(hash);
+                new_table.bucket(index).copy_from_nonoverlapping(&item);
+            }
+
+            guard.disable();
+
+            new_table
+        }
+    }
 }
 
 /// Returns the maximum effective capacity for the given bucket mask, taking
@@ -314,6 +462,37 @@ fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
         // For larger tables we reserve 12.5% of the slots as empty.
         ((bucket_mask + 1) / 8) * 7
     }
+}
+
+/// Returns the number of buckets needed to hold the given number of items,
+/// taking the maximum load factor into account.
+///
+/// Returns `None` if an overflow occurs.
+// Workaround for emscripten bug emscripten-core/emscripten-fastcomp#258
+#[cfg_attr(target_os = "emscripten", inline(never))]
+#[cfg_attr(not(target_os = "emscripten"), inline)]
+fn capacity_to_buckets(cap: usize) -> Option<usize> {
+    debug_assert_ne!(cap, 0);
+
+    // For small tables we require at least 1 empty bucket so that lookups are
+    // guaranteed to terminate if an element doesn't exist in the table.
+    if cap < 8 {
+        // We don't bother with a table size of 2 buckets since that can only
+        // hold a single element. Instead we skip directly to a 4 bucket table
+        // which can hold 3 elements.
+        return Some(if cap < 4 { 4 } else { 8 });
+    }
+
+    // Otherwise require 1/8 buckets to be empty (87.5% load)
+    //
+    // Be careful when modifying this, calculate_layout relies on the
+    // overflow check here.
+    let adjusted_cap = cap.checked_mul(8)? / 7;
+
+    // Any overflows will have been caught by the checked_mul. Also, any
+    // rounding errors from the division above will be cleaned up by
+    // next_power_of_two (which can't overflow because of the previous divison).
+    Some(adjusted_cap.next_power_of_two())
 }
 
 /// Primary hash function, used to select the initial bucket to probe from.
@@ -334,6 +513,25 @@ fn h2(hash: u64) -> u8 {
     let hash_len = usize::min(mem::size_of::<usize>(), mem::size_of::<u64>());
     let top7 = hash >> (hash_len * 8 - 7);
     (top7 & 0x7f) as u8 // truncation
+}
+
+/// Checks whether a control byte represents a full bucket (top bit is clear).
+#[inline]
+fn is_full(ctrl: u8) -> bool {
+    ctrl & 0x80 == 0
+}
+
+/// Checks whether a control byte represents a special value (top bit is set).
+#[inline]
+fn is_special(ctrl: u8) -> bool {
+    ctrl & 0x80 != 0
+}
+
+/// Checks whether a special control value is EMPTY (just check 1 bit).
+#[inline]
+fn special_is_empty(ctrl: u8) -> bool {
+    debug_assert!(is_special(ctrl));
+    ctrl & 0x01 != 0
 }
 
 /// Probe sequence based on triangular numbers, which is guaranteed (since our
