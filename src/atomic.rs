@@ -527,9 +527,9 @@ impl<T: Clone> RawTable<T> {
             None => panic!("capacity overflow"),
         };
 
-        let full_capacity = bucket_mask_to_capacity(unsafe { table.info().bucket_mask });
+        let buckets = unsafe { (table.info().bucket_mask + 1) << 2 };
 
-        let table = self.resize(usize::max(new_items, full_capacity + 1), hasher);
+        let table = self.resize(buckets, hasher);
 
         self.current.store(table);
         table
@@ -537,12 +537,11 @@ impl<T: Clone> RawTable<T> {
 
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn resize(&self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+    fn resize(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
         let table = self.current.load();
         unsafe {
-            debug_assert!(table.info().items <= capacity);
+            debug_assert!(table.info().items <= bucket_mask_to_capacity(buckets - 1));
         }
-        let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
 
         unsafe {
             let mut new_table = TableRef::allocate(buckets);
@@ -582,7 +581,7 @@ impl<T: Clone> RawTable<T> {
 /// the maximum load factor into account.
 #[inline]
 fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
-    if bucket_mask < 8 {
+    if bucket_mask < 16 {
         // For tables with 1/2/4/8 buckets, we always reserve one empty slot.
         // Keep in mind that the bucket mask is one less than the bucket count.
         bucket_mask
@@ -604,11 +603,11 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
 
     // For small tables we require at least 1 empty bucket so that lookups are
     // guaranteed to terminate if an element doesn't exist in the table.
-    if cap < 8 {
+    if cap < 16 {
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
-        return Some(if cap < 4 { 4 } else { 8 });
+        return Some(if cap < 4 { 4 } else { 16 });
     }
 
     // Otherwise require 1/8 buckets to be empty (87.5% load)
