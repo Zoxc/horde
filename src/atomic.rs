@@ -168,8 +168,8 @@ impl TableInfo {
     }
 
     #[inline]
-    unsafe fn record_item_insert_at(&mut self, index: usize, old_ctrl: u8, hash: u64) {
-        self.growth_left -= special_is_empty(old_ctrl) as usize;
+    unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
+        self.growth_left -= 1;
         self.set_ctrl_h2(index, hash);
         self.items += 1;
     }
@@ -258,9 +258,8 @@ impl<T> TableRef<T> {
     fn layout(bucket_count: usize) -> Result<(Layout, usize), LayoutError> {
         let buckets = Layout::new::<T>().repeat(bucket_count)?.0;
         let info = Layout::new::<TableInfo>();
-        let control = Layout::new::<Group>()
-            .repeat(bucket_count / Group::WIDTH)?
-            .0;
+        let control =
+            Layout::array::<u8>(bucket_count + Group::WIDTH)?.align_to(mem::align_of::<Group>())?;
         let (total, info_offet) = buckets.extend(info)?;
         Ok((total.extend(control)?.0, info_offet))
     }
@@ -283,11 +282,16 @@ impl<T> TableRef<T> {
         };
 
         unsafe {
-            *result.data.as_mut() = TableInfo {
+            *result.info_mut() = TableInfo {
                 bucket_mask: bucket_count - 1,
                 growth_left: bucket_mask_to_capacity(bucket_count - 1),
                 items: 0,
             };
+
+            result
+                .info()
+                .ctrl(0)
+                .write_bytes(EMPTY, result.info().num_ctrl_bytes());
         }
 
         result
@@ -399,20 +403,17 @@ impl<T: Clone> RawTable<T> {
         };
 
         unsafe {
+            if unlikely(table.info().growth_left == 0) {
+                table = self.reserve(1, &hasher);
+            }
+
             let mut index = table.info().find_insert_slot(hash);
 
             // We can avoid growing the table once we have reached our load
             // factor if we are replacing a tombstone. This works since the
             // number of EMPTY slots does not change in this case.
             let old_ctrl = *table.info().ctrl(index);
-            if unlikely(table.info().growth_left == 0 && special_is_empty(old_ctrl)) {
-                table = self.reserve(1, &hasher);
-                index = table.info().find_insert_slot(hash);
-            }
-
-            table
-                .info_mut()
-                .record_item_insert_at(index, old_ctrl, hash);
+            table.info_mut().record_item_insert_at(index, hash);
 
             let bucket = table.bucket(index);
             bucket.write(value);
@@ -424,7 +425,14 @@ impl<T: Clone> RawTable<T> {
     #[cold]
     #[inline(never)]
     fn reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
-        let table = self.current.load().unwrap();
+        let table = match self.current.load() {
+            Some(table) => table,
+            None => {
+                let table = TableRef::allocate(4);
+                self.current.store(Some(table));
+                return table;
+            }
+        };
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let new_items = match unsafe { table.info() }.items.checked_add(additional) {
             Some(new_items) => new_items,
@@ -433,9 +441,10 @@ impl<T: Clone> RawTable<T> {
 
         let full_capacity = bucket_mask_to_capacity(unsafe { table.info().bucket_mask });
 
-        // Otherwise, conservatively resize to at least the next size up
-        // to avoid churning deletes into frequent rehashes.
-        self.resize(usize::max(new_items, full_capacity + 1), hasher)
+        let table = self.resize(usize::max(new_items, full_capacity + 1), hasher);
+
+        self.current.store(Some(table));
+        table
     }
 
     /// Allocates a new table of a different size and moves the contents of the
@@ -538,6 +547,9 @@ fn h2(hash: u64) -> u8 {
     let top7 = hash >> (hash_len * 8 - 7);
     (top7 & 0x7f) as u8 // truncation
 }
+
+/// Control byte value for an empty bucket.
+const EMPTY: u8 = 0b1111_1111;
 
 /// Checks whether a control byte represents a full bucket (top bit is clear).
 #[inline]

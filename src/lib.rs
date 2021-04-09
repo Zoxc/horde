@@ -20,6 +20,7 @@ extern crate alloc;
 mod macros;
 
 pub mod atomic;
+mod atomic_test;
 pub mod raw;
 mod scopeguard;
 
