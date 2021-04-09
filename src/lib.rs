@@ -12,14 +12,16 @@
         maybe_uninit_array_assume_init
     )
 )]
+#![feature(alloc_layout_extra)]
 
 extern crate alloc;
 
 #[macro_use]
 mod macros;
 
+pub mod atomic;
+pub mod raw;
 mod scopeguard;
-mod raw;
 
 pub mod map;
 

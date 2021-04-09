@@ -21,12 +21,12 @@ cfg_if! {
         any(target_arch = "x86", target_arch = "x86_64"),
         not(miri)
     ))] {
-        mod sse2;
-        use sse2 as imp;
+        pub mod sse2;
+        pub use sse2 as imp;
     } else {
         #[path = "generic.rs"]
-        mod generic;
-        use generic as imp;
+        pub mod generic;
+        pub use generic as imp;
     }
 }
 
@@ -428,28 +428,6 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             table: RawTableInner::new_in(alloc),
             marker: PhantomData,
         }
-    }
-
-    /// Allocates a new hash table with the given number of buckets.
-    ///
-    /// The control bytes are left uninitialized.
-    #[cfg_attr(feature = "inline-more", inline)]
-    unsafe fn new_uninitialized(
-        alloc: A,
-        buckets: usize,
-        fallibility: Fallibility,
-    ) -> Result<Self, TryReserveError> {
-        debug_assert!(buckets.is_power_of_two());
-
-        Ok(Self {
-            table: RawTableInner::new_uninitialized(
-                alloc,
-                TableLayout::new::<T>(),
-                buckets,
-                fallibility,
-            )?,
-            marker: PhantomData,
-        })
     }
 
     /// Attempts to allocate a new hash table with at least enough capacity
