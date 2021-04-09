@@ -463,7 +463,9 @@ impl<T: Clone> RawTable<T> {
     pub fn mutex(&self) -> &Mutex<()> {
         &self.lock
     }
+}
 
+impl<T: Clone> RawTable<T> {
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
