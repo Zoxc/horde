@@ -10,6 +10,7 @@ use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{lock_api::RawMutex as RawMutex_, RawMutex};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
+    cell::UnsafeCell,
     intrinsics::{likely, unlikely},
     iter::FusedIterator,
     marker::PhantomData,
@@ -91,6 +92,8 @@ pub struct RawTable<T> {
     current: AtomicCell<TableRef<T>>,
 
     lock: RawMutex,
+
+    old: UnsafeCell<Vec<TableRef<T>>>,
 
     // Tell dropck that we own instances of T.
     marker: PhantomData<T>,
@@ -334,10 +337,12 @@ impl<T> TableRef<T> {
 
     #[inline]
     unsafe fn free(self) {
-        Global.deallocate(
-            NonNull::new_unchecked(self.bucket(0).as_ptr() as *mut u8),
-            Self::layout(self.info().buckets()).unwrap_unchecked().0,
-        )
+        if self.info().items > 0 {
+            Global.deallocate(
+                NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
+                Self::layout(self.info().buckets()).unwrap_unchecked().0,
+            )
+        }
     }
 
     unsafe fn info(&self) -> &TableInfo {
@@ -346,6 +351,12 @@ impl<T> TableRef<T> {
 
     unsafe fn info_mut(&mut self) -> &mut TableInfo {
         self.data.as_mut()
+    }
+
+    #[inline]
+    pub unsafe fn bucket_before_first(&self) -> *mut T {
+        let info_offet = Self::layout(self.info().buckets()).unwrap_unchecked().1;
+        (self.data.as_ptr() as *const u8).sub(info_offet) as *mut T
     }
 
     #[inline]
@@ -399,11 +410,24 @@ impl<T> TableRef<T> {
     }
 }
 
+unsafe impl<#[may_dangle] T> Drop for RawTable<T> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            self.current.load().free();
+            for table in self.old.get_mut() {
+                table.free();
+            }
+        }
+    }
+}
+
 impl<T: Clone> RawTable<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
             current: AtomicCell::new(TableRef::empty()),
+            old: UnsafeCell::new(Vec::new()),
             marker: PhantomData,
             lock: RawMutex::INIT,
         }
@@ -501,6 +525,8 @@ impl<T: Clone> RawTable<T> {
             }
 
             guard.disable();
+
+            (*self.old.get()).push(table);
 
             new_table
         }

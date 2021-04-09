@@ -6,12 +6,14 @@ use crate::atomic::TableRef;
 #[test]
 fn high_align() {
     #[repr(align(64))]
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct A(u64);
 
     let a: TableRef<A> = TableRef::empty();
 
     let mut table = RawTable::new();
+
+    table.find(1, |a| a == &A(1));
 
     table.insert(1, A(1), |a| a.0);
 }
