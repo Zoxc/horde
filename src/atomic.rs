@@ -463,6 +463,12 @@ impl<T> RawTable<T> {
     pub fn mutex(&self) -> &Mutex<()> {
         &self.lock
     }
+
+    #[inline]
+    pub fn iter(&self) -> RawIter<T> {
+        let table = self.current.load();
+        unsafe { table.iter() }
+    }
 }
 
 impl<T: Clone> RawTable<T> {
