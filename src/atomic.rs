@@ -16,6 +16,8 @@ use std::{
     mem,
 };
 
+pub mod code;
+
 /// A reference to a hash table bucket containing a `T`.
 ///
 /// This is usually just a pointer to the element itself. However if the element
@@ -273,18 +275,8 @@ impl<T> TableRef<T> {
             .map(|ptr| ptr.cast())
             .unwrap_or_else(|_| handle_alloc_error(layout));
 
-        println!(
-            "allocate {:?} - {:?}, size {:x} - buckets {:x}",
-            ptr,
-            unsafe { ptr.as_ptr().add(layout.size()) },
-            layout.size(),
-            bucket_count
-        );
-
         let info =
             unsafe { NonNull::new_unchecked(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
-
-        println!("info {:?}", info);
 
         let mut result = Self {
             data: info,
@@ -303,9 +295,7 @@ impl<T> TableRef<T> {
                 .ctrl(0)
                 .write_bytes(EMPTY, result.info().num_ctrl_bytes());
         }
-        unsafe {
-            println!("bucket_past_last {:?}", result.bucket_past_last());
-        }
+
         result
     }
 
@@ -411,7 +401,7 @@ impl<T: Clone> RawTable<T> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
+    pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
         let table = self.current.load();
 
         let mut table = if unlikely(table.is_none()) {
@@ -425,22 +415,11 @@ impl<T: Clone> RawTable<T> {
                 table = self.reserve(1, &hasher);
             }
 
-            let mut index = table.info().find_insert_slot(hash);
+            let index = table.info().find_insert_slot(hash);
 
-            // We can avoid growing the table once we have reached our load
-            // factor if we are replacing a tombstone. This works since the
-            // number of EMPTY slots does not change in this case.
-            let old_ctrl = *table.info().ctrl(index);
             table.info_mut().record_item_insert_at(index, hash);
 
             let bucket = table.bucket(index);
-            println!(
-                "bucket {:?}, index {}, buckets {}, info {:?}",
-                bucket.ptr,
-                index,
-                table.info().buckets(),
-                table.data,
-            );
             bucket.write(value);
             bucket
         }
@@ -500,7 +479,6 @@ impl<T: Clone> RawTable<T> {
                 // - all elements are unique.
                 let (index, _) = new_table.info().prepare_insert_slot(hash);
 
-                println!("resize-copy index {}", index);
                 // FIXME: Scheme to drop items on panic?
 
                 // Clone may panic
@@ -586,19 +564,6 @@ const EMPTY: u8 = 0b1111_1111;
 #[inline]
 fn is_full(ctrl: u8) -> bool {
     ctrl & 0x80 == 0
-}
-
-/// Checks whether a control byte represents a special value (top bit is set).
-#[inline]
-fn is_special(ctrl: u8) -> bool {
-    ctrl & 0x80 != 0
-}
-
-/// Checks whether a special control value is EMPTY (just check 1 bit).
-#[inline]
-fn special_is_empty(ctrl: u8) -> bool {
-    debug_assert!(is_special(ctrl));
-    ctrl & 0x01 != 0
 }
 
 /// Probe sequence based on triangular numbers, which is guaranteed (since our
@@ -687,6 +652,7 @@ impl<'a> RawIterHashInner<'a> {
 impl<'a, T> Iterator for RawIterHash<'a, T> {
     type Item = Bucket<T>;
 
+    #[inline]
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             match self.inner.next() {
@@ -700,6 +666,7 @@ impl<'a, T> Iterator for RawIterHash<'a, T> {
 impl<'a> Iterator for RawIterHashInner<'a> {
     type Item = usize;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
             loop {
