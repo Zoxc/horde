@@ -273,8 +273,18 @@ impl<T> TableRef<T> {
             .map(|ptr| ptr.cast())
             .unwrap_or_else(|_| handle_alloc_error(layout));
 
+        println!(
+            "allocate {:?} - {:?}, size {:x} - buckets {:x}",
+            ptr,
+            unsafe { ptr.as_ptr().add(layout.size()) },
+            layout.size(),
+            bucket_count
+        );
+
         let info =
             unsafe { NonNull::new_unchecked(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
+
+        println!("info {:?}", info);
 
         let mut result = Self {
             data: info,
@@ -293,7 +303,9 @@ impl<T> TableRef<T> {
                 .ctrl(0)
                 .write_bytes(EMPTY, result.info().num_ctrl_bytes());
         }
-
+        unsafe {
+            println!("bucket_past_last {:?}", result.bucket_past_last());
+        }
         result
     }
 
@@ -315,9 +327,15 @@ impl<T> TableRef<T> {
 
     #[inline]
     pub unsafe fn bucket_past_last(&self) -> *mut T {
-        let info_padding = Self::layout(0).unwrap().1;
-
-        (self as *const TableRef<T> as *const u8).sub(info_padding) as *mut T
+        let buckets = Layout::new::<T>()
+            .repeat(self.info().buckets())
+            .unwrap_unchecked()
+            .0;
+        let buckets_size = buckets.size();
+        let info = Layout::new::<TableInfo>();
+        let info_offet = buckets.extend(info).unwrap_unchecked().1;
+        let info_padding = info_offet - buckets_size;
+        (self.data.as_ptr() as *const u8).sub(info_padding) as *mut T
     }
 
     /// Returns a pointer to an element in the table.
@@ -416,6 +434,13 @@ impl<T: Clone> RawTable<T> {
             table.info_mut().record_item_insert_at(index, hash);
 
             let bucket = table.bucket(index);
+            println!(
+                "bucket {:?}, index {}, buckets {}, info {:?}",
+                bucket.ptr,
+                index,
+                table.info().buckets(),
+                table.data,
+            );
             bucket.write(value);
             bucket
         }
@@ -457,7 +482,10 @@ impl<T: Clone> RawTable<T> {
         let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
 
         unsafe {
-            let mut new_table = TableRef::allocate(capacity);
+            let mut new_table = TableRef::allocate(buckets);
+
+            new_table.info_mut().items = table.info().items;
+            new_table.info_mut().growth_left -= table.info().items;
 
             let guard = OnDrop(|| new_table.free());
 
@@ -471,6 +499,9 @@ impl<T: Clone> RawTable<T> {
                 // - we know there is enough space in the table.
                 // - all elements are unique.
                 let (index, _) = new_table.info().prepare_insert_slot(hash);
+
+                println!("resize-copy index {}", index);
+                // FIXME: Scheme to drop items on panic?
 
                 // Clone may panic
                 new_table.bucket(index).write(item.as_ref().clone());

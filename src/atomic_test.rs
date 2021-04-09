@@ -4,12 +4,15 @@ use crate::atomic::RawTable;
 
 #[test]
 fn rehash() {
+    println!("testing!");
+    eprintln!("testinge!");
     let mut table = RawTable::new();
     let hasher = |i: &u64| *i;
     for i in 0..100 {
         table.insert(i, i, hasher);
     }
 
+    eprintln!("testinge2!");
     for i in 0..100 {
         unsafe {
             assert_eq!(table.find(i, |x| *x == i).map(|b| b.read()), Some(i));

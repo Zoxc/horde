@@ -3,7 +3,7 @@ use crate::TryReserveError;
 use core::borrow::Borrow;
 use core::fmt::{self, Debug};
 use core::hash::{BuildHasher, Hash};
-use core::iter::{FromIterator};
+use core::iter::FromIterator;
 use core::mem;
 
 /// Default hasher for `HashMap`.
@@ -635,9 +635,9 @@ fn assert_covariance() {
     }
 }
 
-#[cfg(test)]
+#[cfg(test_skip)]
 mod test_map {
-    use super::{HashMap};
+    use super::HashMap;
     use crate::TryReserveError::*;
     use std::cell::RefCell;
     use std::usize;
