@@ -33,7 +33,7 @@ cfg_if! {
 mod alloc;
 pub(crate) use self::alloc::{do_alloc, Allocator, Global};
 
-mod bitmask;
+pub mod bitmask;
 
 use self::bitmask::{BitMask, BitMaskIter};
 use self::imp::Group;
