@@ -433,6 +433,9 @@ unsafe impl<#[may_dangle] T> Drop for RawTable<T> {
     }
 }
 
+unsafe impl<T: Send> Send for RawTable<T> {}
+unsafe impl<T: Send> Sync for RawTable<T> {}
+
 impl<T> RawTable<T> {
     #[inline]
     pub fn new() -> Self {
