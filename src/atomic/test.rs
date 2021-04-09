@@ -1,18 +1,29 @@
 #![cfg(test)]
 
 use crate::atomic::RawTable;
+use crate::atomic::TableRef;
+
+#[test]
+fn high_align() {
+    #[repr(align(64))]
+    #[derive(Clone)]
+    struct A(u64);
+
+    let a: TableRef<A> = TableRef::empty();
+
+    let mut table = RawTable::new();
+
+    table.insert(1, A(1), |a| a.0);
+}
 
 #[test]
 fn rehash() {
-    println!("testing!");
-    eprintln!("testinge!");
     let mut table = RawTable::new();
     let hasher = |i: &u64| *i;
     for i in 0..100 {
         table.insert(i, i, hasher);
     }
 
-    eprintln!("testinge2!");
     for i in 0..100 {
         unsafe {
             assert_eq!(table.find(i, |x| *x == i).map(|b| b.read()), Some(i));

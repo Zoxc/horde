@@ -28,6 +28,23 @@ impl Group {
     /// value for an empty hash table.
     ///
     /// This is guaranteed to be aligned to the group size.
+    pub const EMPTY: Group = {
+        #[repr(C)]
+        struct AlignedBytes {
+            _align: [Group; 0],
+            bytes: [u8; Group::WIDTH],
+        }
+        const ALIGNED_BYTES: AlignedBytes = AlignedBytes {
+            _align: [],
+            bytes: [EMPTY; Group::WIDTH],
+        };
+        unsafe { mem::transmute(ALIGNED_BYTES) }
+    };
+
+    /// Returns a full group of empty bytes, suitable for use as the initial
+    /// value for an empty hash table.
+    ///
+    /// This is guaranteed to be aligned to the group size.
     #[allow(clippy::items_after_statements)]
     pub const fn static_empty() -> &'static [u8; Group::WIDTH] {
         #[repr(C)]

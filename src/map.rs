@@ -279,12 +279,6 @@ impl<K, V, S, A: Allocator + Clone> HashMap<K, V, S, A> {
         self.table.capacity()
     }
 
-    #[cfg(test)]
-    #[cfg_attr(feature = "inline-more", inline)]
-    fn raw_capacity(&self) -> usize {
-        self.table.buckets()
-    }
-
     /// Returns the number of elements in the map.
     ///
     /// # Examples

@@ -16,7 +16,8 @@ use std::{
     mem,
 };
 
-pub mod code;
+mod code;
+mod test;
 
 /// A reference to a hash table bucket containing a `T`.
 ///
@@ -87,8 +88,7 @@ impl<T> Bucket<T> {
 
 /// A raw hash table with an unsafe API.
 pub struct RawTable<T> {
-    // FIXME: Replace with a static dummy table as initialization?
-    current: AtomicCell<Option<TableRef<T>>>,
+    current: AtomicCell<TableRef<T>>,
 
     lock: RawMutex,
 
@@ -257,6 +257,41 @@ impl<T> Clone for TableRef<T> {
 
 impl<T> TableRef<T> {
     #[inline]
+    fn empty() -> Self {
+        // FIXME: Figure out if we need this to be aligned to `T`, even though no references to `T`
+        // should be created from it.
+        // There can be padding bytes at the end of a real layout to make it a multiple of the
+        // alignment, but these aren't accessed in practise.
+        #[repr(C)]
+        struct EmptyTable {
+            info: TableInfo,
+            control_bytes: [Group; 1],
+        }
+
+        if cfg!(debug_assertions) {
+            let real = Self::layout(0).unwrap().0;
+            let dummy = Layout::new::<EmptyTable>().align_to(real.align()).unwrap();
+            debug_assert_eq!(real, dummy);
+        }
+
+        let empty: &'static EmptyTable = &EmptyTable {
+            info: TableInfo {
+                bucket_mask: 0,
+                growth_left: 0,
+                items: 0,
+            },
+            control_bytes: [Group::EMPTY; 1],
+        };
+
+        Self {
+            data: unsafe {
+                NonNull::new_unchecked(&empty.info as *const TableInfo as *mut TableInfo)
+            },
+            marker: PhantomData,
+        }
+    }
+
+    #[inline]
     fn layout(bucket_count: usize) -> Result<(Layout, usize), LayoutError> {
         let buckets = Layout::new::<T>().repeat(bucket_count)?.0;
         let info = Layout::new::<TableInfo>();
@@ -370,7 +405,7 @@ impl<T: Clone> RawTable<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
-            current: AtomicCell::new(None),
+            current: AtomicCell::new(TableRef::empty()),
             marker: PhantomData,
             lock: RawMutex::INIT,
         }
@@ -380,12 +415,6 @@ impl<T: Clone> RawTable<T> {
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
         let table = self.current.load();
-        let table = if unlikely(table.is_none()) {
-            return None;
-        } else {
-            table.unwrap()
-        };
-
         unsafe {
             for bucket in table.iter_hash(hash) {
                 let elm = bucket.as_ref();
@@ -402,13 +431,7 @@ impl<T: Clone> RawTable<T> {
     /// This does not check if the given element already exists in the table.
     #[inline]
     pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
-        let table = self.current.load();
-
-        let mut table = if unlikely(table.is_none()) {
-            self.reserve(1, &hasher)
-        } else {
-            table.unwrap()
-        };
+        let mut table = self.current.load();
 
         unsafe {
             if unlikely(table.info().growth_left == 0) {
@@ -429,14 +452,8 @@ impl<T: Clone> RawTable<T> {
     #[cold]
     #[inline(never)]
     fn reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
-        let table = match self.current.load() {
-            Some(table) => table,
-            None => {
-                let table = TableRef::allocate(4);
-                self.current.store(Some(table));
-                return table;
-            }
-        };
+        let table = self.current.load();
+
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let new_items = match unsafe { table.info() }.items.checked_add(additional) {
             Some(new_items) => new_items,
@@ -447,14 +464,14 @@ impl<T: Clone> RawTable<T> {
 
         let table = self.resize(usize::max(new_items, full_capacity + 1), hasher);
 
-        self.current.store(Some(table));
+        self.current.store(table);
         table
     }
 
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
     fn resize(&self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
-        let table = self.current.load().unwrap();
+        let table = self.current.load();
         unsafe {
             debug_assert!(table.info().items <= capacity);
         }
