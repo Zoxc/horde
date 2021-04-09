@@ -7,7 +7,7 @@ use crate::{
 };
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
-use parking_lot::{lock_api::RawMutex as RawMutex_, RawMutex};
+use parking_lot::Mutex;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
@@ -15,6 +15,7 @@ use std::{
     iter::FusedIterator,
     marker::PhantomData,
     mem,
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 mod code;
@@ -91,7 +92,7 @@ impl<T> Bucket<T> {
 pub struct RawTable<T> {
     current: AtomicCell<TableRef<T>>,
 
-    lock: RawMutex,
+    lock: Mutex<()>,
 
     old: UnsafeCell<Vec<TableRef<T>>>,
 
@@ -165,6 +166,16 @@ impl TableInfo {
         *self.ctrl(index2) = ctrl;
     }
 
+    /// Sets a control byte, and possibly also the replicated control byte at
+    /// the end of the array. Same as set_ctrl, but uses release stores.
+    #[inline]
+    unsafe fn set_ctrl_release(&self, index: usize, ctrl: u8) {
+        let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
+
+        (*(self.ctrl(index) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+        (*(self.ctrl(index2) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+    }
+
     /// Sets a control byte to the hash, and possibly also the replicated control byte at
     /// the end of the array.
     #[inline]
@@ -175,7 +186,7 @@ impl TableInfo {
     #[inline]
     unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
         self.growth_left -= 1;
-        self.set_ctrl_h2(index, hash);
+        self.set_ctrl_release(index, h2(hash));
         self.items += 1;
     }
 
@@ -338,6 +349,7 @@ impl<T> TableRef<T> {
     #[inline]
     unsafe fn free(self) {
         if self.info().items > 0 {
+            self.iter().drop_elements();
             Global.deallocate(
                 NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
                 Self::layout(self.info().buckets()).unwrap_unchecked().0,
@@ -429,7 +441,7 @@ impl<T: Clone> RawTable<T> {
             current: AtomicCell::new(TableRef::empty()),
             old: UnsafeCell::new(Vec::new()),
             marker: PhantomData,
-            lock: RawMutex::INIT,
+            lock: Mutex::new(()),
         }
     }
 
@@ -453,6 +465,7 @@ impl<T: Clone> RawTable<T> {
     /// This does not check if the given element already exists in the table.
     #[inline]
     pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
+        let _lock = self.lock.lock();
         let mut table = self.current.load();
 
         unsafe {
@@ -462,10 +475,11 @@ impl<T: Clone> RawTable<T> {
 
             let index = table.info().find_insert_slot(hash);
 
-            table.info_mut().record_item_insert_at(index, hash);
-
             let bucket = table.bucket(index);
             bucket.write(value);
+
+            table.info_mut().record_item_insert_at(index, hash);
+
             bucket
         }
     }

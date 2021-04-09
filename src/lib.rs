@@ -12,7 +12,7 @@
         maybe_uninit_array_assume_init
     )
 )]
-#![feature(alloc_layout_extra, option_result_unwrap_unchecked)]
+#![feature(alloc_layout_extra, option_result_unwrap_unchecked, asm)]
 
 extern crate alloc;
 

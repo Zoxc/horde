@@ -63,7 +63,14 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
-        Group(x86::_mm_loadu_si128(ptr.cast()))
+        let mut result: x86::__m128i;
+        asm!(
+            "movdqu {}, [{}]",
+            out(xmm_reg) result,
+            in(reg) ptr,
+            options(pure, readonly, nostack, preserves_flags)
+        );
+        Group(result)
     }
 
     /// Loads a group of bytes starting at the given address, which must be
@@ -73,7 +80,15 @@ impl Group {
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
         // FIXME: use align_offset once it stabilizes
         debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
-        Group(x86::_mm_load_si128(ptr.cast()))
+
+        let mut result: x86::__m128i;
+        asm!(
+            "movdqa {}, [{}]",
+            out(xmm_reg) result,
+            in(reg) ptr,
+            options(pure, readonly, nostack, preserves_flags)
+        );
+        Group(result)
     }
 
     /// Stores the group of bytes to the given address, which must be
