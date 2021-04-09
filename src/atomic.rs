@@ -284,9 +284,7 @@ impl<T> TableRef<T> {
         };
 
         Self {
-            data: unsafe {
-                NonNull::new_unchecked(&empty.info as *const TableInfo as *mut TableInfo)
-            },
+            data: unsafe { NonNull::new_unchecked(empty as *const EmptyTable as *mut TableInfo) },
             marker: PhantomData,
         }
     }
