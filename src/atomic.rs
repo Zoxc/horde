@@ -1,5 +1,8 @@
 use crate::{
-    raw::{bitmask::BitMaskIter, imp::Group},
+    raw::{
+        bitmask::{BitMask, BitMaskIter},
+        imp::Group,
+    },
     OnDrop,
 };
 use core::ptr::NonNull;
@@ -8,6 +11,7 @@ use parking_lot::{lock_api::RawMutex as RawMutex_, RawMutex};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     intrinsics::{likely, unlikely},
+    iter::FusedIterator,
     marker::PhantomData,
     mem,
 };
@@ -290,7 +294,7 @@ impl<T> TableRef<T> {
     }
 
     #[inline]
-    fn free(self) {
+    unsafe fn free(self) {
         Global.deallocate(
             NonNull::new_unchecked(self.bucket(0).as_ptr() as *mut u8),
             Self::layout(self.info().buckets()).unwrap_unchecked().0,
@@ -305,17 +309,20 @@ impl<T> TableRef<T> {
         self.data.as_mut()
     }
 
+    #[inline]
+    pub unsafe fn bucket_past_last(&self) -> *mut T {
+        let info_padding = Self::layout(0).unwrap().1;
+
+        (self as *const TableRef<T> as *const u8).sub(info_padding) as *mut T
+    }
+
     /// Returns a pointer to an element in the table.
     #[inline]
     pub unsafe fn bucket(&self, index: usize) -> Bucket<T> {
         debug_assert!(index < self.info().buckets());
 
-        let info_offset = Self::layout(self.info().buckets()).unwrap_unchecked().1;
-
-        let start = (self as *const TableRef<T> as *const u8).sub(info_offset) as *mut T;
-
         Bucket {
-            ptr: NonNull::new_unchecked(start.add(index)),
+            ptr: NonNull::new_unchecked(self.bucket_past_last().sub(index)),
         }
     }
 
@@ -329,6 +336,21 @@ impl<T> TableRef<T> {
     #[inline]
     pub unsafe fn iter_hash(&self, hash: u64) -> RawIterHash<'_, T> {
         RawIterHash::new(*self, self.info(), hash)
+    }
+
+    /// Returns an iterator over every element in the table. It is up to
+    /// the caller to ensure that the `RawTable` outlives the `RawIter`.
+    /// Because we cannot make the `next` method unsafe on the `RawIter`
+    /// struct, we have to make the `iter` method unsafe.
+    #[cfg_attr(feature = "inline-more", inline)]
+    pub unsafe fn iter(&self) -> RawIter<T> {
+        let data = Bucket {
+            ptr: NonNull::new_unchecked(self.bucket_past_last()),
+        };
+        RawIter {
+            iter: RawIterRange::new(self.info().ctrl(0), data, self.info().buckets()),
+            items: self.info().items,
+        }
     }
 }
 
@@ -418,7 +440,7 @@ impl<T: Clone> RawTable<T> {
 
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn resize(&mut self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+    fn resize(&self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
         let table = self.current.load().unwrap();
         unsafe {
             debug_assert!(table.info().items <= capacity);
@@ -431,7 +453,7 @@ impl<T: Clone> RawTable<T> {
             let guard = OnDrop(|| new_table.free());
 
             // Copy all elements to the new table.
-            for item in self.iter() {
+            for item in table.iter() {
                 // This may panic.
                 let hash = hasher(item.as_ref());
 
@@ -440,7 +462,9 @@ impl<T: Clone> RawTable<T> {
                 // - we know there is enough space in the table.
                 // - all elements are unique.
                 let (index, _) = new_table.info().prepare_insert_slot(hash);
-                new_table.bucket(index).copy_from_nonoverlapping(&item);
+
+                // Clone may panic
+                new_table.bucket(index).write(item.as_ref().clone());
             }
 
             guard.disable();
@@ -650,3 +674,155 @@ impl<'a> Iterator for RawIterHashInner<'a> {
         }
     }
 }
+
+/// Iterator over a sub-range of a table. Unlike `RawIter` this iterator does
+/// not track an item count.
+pub(crate) struct RawIterRange<T> {
+    // Mask of full buckets in the current group. Bits are cleared from this
+    // mask as each element is processed.
+    current_group: BitMask,
+
+    // Pointer to the buckets for the current group.
+    data: Bucket<T>,
+
+    // Pointer to the next group of control bytes,
+    // Must be aligned to the group size.
+    next_ctrl: *const u8,
+
+    // Pointer one past the last control byte of this range.
+    end: *const u8,
+}
+
+impl<T> RawIterRange<T> {
+    /// Returns a `RawIterRange` covering a subset of a table.
+    ///
+    /// The control byte address must be aligned to the group size.
+    #[cfg_attr(feature = "inline-more", inline)]
+    unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
+        debug_assert_ne!(len, 0);
+        debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
+        let end = ctrl.add(len);
+
+        // Load the first group and advance ctrl to point to the next group
+        let current_group = Group::load_aligned(ctrl).match_full();
+        let next_ctrl = ctrl.add(Group::WIDTH);
+
+        Self {
+            current_group,
+            data,
+            next_ctrl,
+            end,
+        }
+    }
+}
+
+// We make raw iterators unconditionally Send and Sync, and let the PhantomData
+// in the actual iterator implementations determine the real Send/Sync bounds.
+unsafe impl<T> Send for RawIterRange<T> {}
+unsafe impl<T> Sync for RawIterRange<T> {}
+
+impl<T> Clone for RawIterRange<T> {
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            next_ctrl: self.next_ctrl,
+            current_group: self.current_group,
+            end: self.end,
+        }
+    }
+}
+
+impl<T> Iterator for RawIterRange<T> {
+    type Item = Bucket<T>;
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<Bucket<T>> {
+        unsafe {
+            loop {
+                if let Some(index) = self.current_group.lowest_set_bit() {
+                    self.current_group = self.current_group.remove_lowest_bit();
+                    return Some(self.data.next_n(index));
+                }
+
+                if self.next_ctrl >= self.end {
+                    return None;
+                }
+
+                // We might read past self.end up to the next group boundary,
+                // but this is fine because it only occurs on tables smaller
+                // than the group size where the trailing control bytes are all
+                // EMPTY. On larger tables self.end is guaranteed to be aligned
+                // to the group size (since tables are power-of-two sized).
+                self.current_group = Group::load_aligned(self.next_ctrl).match_full();
+                self.data = self.data.next_n(Group::WIDTH);
+                self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
+            }
+        }
+    }
+}
+
+impl<T> FusedIterator for RawIterRange<T> {}
+
+/// Iterator which returns a raw pointer to every full bucket in the table.
+///
+/// For maximum flexibility this iterator is not bound by a lifetime, but you
+/// must observe several rules when using it:
+/// - You must not free the hash table while iterating (including via growing/shrinking).
+/// - It is fine to erase a bucket that has been yielded by the iterator.
+/// - Erasing a bucket that has not yet been yielded by the iterator may still
+///   result in the iterator yielding that bucket (unless `reflect_remove` is called).
+/// - It is unspecified whether an element inserted after the iterator was
+///   created will be yielded by that iterator (unless `reflect_insert` is called).
+/// - The order in which the iterator yields bucket is unspecified and may
+///   change in the future.
+pub struct RawIter<T> {
+    pub(crate) iter: RawIterRange<T>,
+    items: usize,
+}
+
+impl<T> RawIter<T> {
+    unsafe fn drop_elements(&mut self) {
+        if mem::needs_drop::<T>() && self.len() != 0 {
+            for item in self {
+                item.drop();
+            }
+        }
+    }
+}
+
+impl<T> Clone for RawIter<T> {
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn clone(&self) -> Self {
+        Self {
+            iter: self.iter.clone(),
+            items: self.items,
+        }
+    }
+}
+
+impl<T> Iterator for RawIter<T> {
+    type Item = Bucket<T>;
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<Bucket<T>> {
+        if let Some(b) = self.iter.next() {
+            self.items -= 1;
+            Some(b)
+        } else {
+            // We don't check against items == 0 here to allow the
+            // compiler to optimize away the item count entirely if the
+            // iterator length is never queried.
+            debug_assert_eq!(self.items, 0);
+            None
+        }
+    }
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.items, Some(self.items))
+    }
+}
+
+impl<T> ExactSizeIterator for RawIter<T> {}
+impl<T> FusedIterator for RawIter<T> {}
