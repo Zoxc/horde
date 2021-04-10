@@ -2,6 +2,7 @@
 
 use super::SyncInsertTable;
 use crate::qsbr::pin;
+use crate::qsbr::release;
 use std::collections::hash_map::RandomState;
 
 #[test]
@@ -15,6 +16,8 @@ fn high_align() {
     table.find(1, |a| a == &A(1));
 
     table.lock().insert_new(1, A(1), |a| a.0);
+
+    release();
 }
 
 #[test]
@@ -25,6 +28,8 @@ fn test_create_capacity_zero() {
 
     assert!(m.map_get(&1).is_some());
     assert!(m.map_get(&0).is_none());
+
+    release();
 }
 
 #[test]
@@ -37,6 +42,8 @@ fn test_insert() {
     assert_eq!(m.len(), 2);
     assert_eq!(m.map_get(&1).unwrap(), 2);
     assert_eq!(m.map_get(&2).unwrap(), 4);
+
+    release();
 }
 
 #[test]
@@ -53,6 +60,8 @@ fn test_iter() {
 
         assert_eq!(v, vec![(1, 2), (2, 4), (5, 3), (9, 4)]);
     });
+
+    release();
 }
 
 #[test]
@@ -64,6 +73,8 @@ fn test_insert_conflicts() {
     assert_eq!(m.map_get(&9).unwrap(), 4);
     assert_eq!(m.map_get(&5).unwrap(), 3);
     assert_eq!(m.map_get(&1).unwrap(), 2);
+
+    release();
 }
 
 #[test]
@@ -80,6 +91,8 @@ fn test_expand() {
     }
 
     assert_eq!(m.len(), i);
+
+    release();
 }
 
 #[test]
@@ -91,6 +104,8 @@ fn test_find() {
         None => panic!(),
         Some(v) => assert_eq!(v, 2),
     }
+
+    release();
 }
 
 #[test]
@@ -117,7 +132,9 @@ fn test_capacity_not_less_than_len() {
         // Insert at capacity should cause allocation.
         a.map_insert(item, 0);
         assert!(a.read(pin).capacity() > a.len());
-    })
+    });
+
+    release();
 }
 
 #[test]
@@ -133,5 +150,7 @@ fn rehash() {
             assert_eq!(table.read(pin).get(i, |x| *x == i).map(|b| *b), Some(i));
             assert!(table.read(pin).get(i + 100, |x| *x == i + 100).is_none());
         }
-    })
+    });
+
+    release();
 }

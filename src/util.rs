@@ -1,12 +1,6 @@
 use core::borrow::Borrow;
 use core::hash::{BuildHasher, Hash};
 
-#[inline(never)]
-#[cold]
-pub fn cold_path<F: FnOnce() -> R, R>(f: F) -> R {
-    f()
-}
-
 /// Ensures that a single closure type across uses of this which, in turn prevents multiple
 /// instances of any functions like RawTable::reserve from being generated
 #[inline]

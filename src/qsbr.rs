@@ -1,18 +1,40 @@
 use crate::scopeguard::guard;
 use crossbeam_epoch::Guard;
-use std::{
-    cell::UnsafeCell,
-    intrinsics::unlikely,
-    sync::atomic::{compiler_fence, Ordering},
-};
+use std::{cell::UnsafeCell, intrinsics::unlikely};
 
 mod code;
+
+/// Proof that the guard is initialized on this thread.
+#[derive(Clone, Copy)]
+pub struct Init {
+    _private: (),
+}
+
+impl !Send for Init {}
+
+impl Init {
+    pub fn new() -> Self {
+        pin(|_| ());
+        Init { _private: () }
+    }
+
+    #[inline]
+    pub fn pin<R>(&self, f: impl FnOnce(&Pin) -> R) -> R {
+        let data = unsafe { &mut *(hide(data())) };
+        let old_pinned = data.pinned;
+        data.pinned = true;
+        guard(old_pinned, |pin| data.pinned = *pin);
+        f(&Pin { _private: () })
+    }
+}
 
 pub struct Pin {
     _private: (),
 }
 
 impl Pin {
+    // FIXME: Is it sound to get the pin on demand?
+    // Some other thread than ourselves could allocate data that we'd read?
     pub fn guard(&self) -> &Guard {
         let data = hide(data());
 
@@ -86,9 +108,24 @@ fn data() -> *mut Data {
     DATA.get()
 }
 
+// Never inline due to thread_local bugs
+#[inline(never)]
+fn data_init() -> *mut Data {
+    let data = hide(DATA.get());
+
+    {
+        let data = unsafe { &mut *data };
+        if unlikely(data.guard.is_none()) {
+            data.get_guard();
+        }
+    }
+
+    data
+}
+
 #[inline]
 pub fn pin<R>(f: impl FnOnce(&Pin) -> R) -> R {
-    let data = unsafe { &mut *(hide(data())) };
+    let data = unsafe { &mut *(hide(data_init())) };
     let old_pinned = data.pinned;
     data.pinned = true;
     guard(old_pinned, |pin| data.pinned = *pin);
@@ -103,12 +140,7 @@ pub fn release() {
 
 pub fn collect() {
     let data = unsafe { &mut *(hide(data())) };
-
-    // This fence prevents the `data` access from being moved below into the
-    // basic block below. That would cause LLVM to create a second TLS lookup since
-    // it does one per basic block.
-    compiler_fence(Ordering::SeqCst);
-
     data.assert_unpinned();
-    data.guard.as_mut().map(|guard| guard.repin());
+    data.guard = None;
+    data.guard = Some(crossbeam_epoch::pin());
 }

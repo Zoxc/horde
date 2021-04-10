@@ -11,7 +11,8 @@
     slice_ptr_get,
     nonnull_slice_from_raw_parts,
     maybe_uninit_array_assume_init,
-    thread_local
+    thread_local,
+    negative_impls
 )]
 
 extern crate alloc;

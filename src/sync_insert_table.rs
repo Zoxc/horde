@@ -10,6 +10,7 @@ use crate::{
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
+use std::sync::Arc;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
@@ -106,7 +107,7 @@ pub struct SyncInsertTable<T, S = RandomState> {
 
     lock: Mutex<()>,
 
-    old: UnsafeCell<Vec<TableRef<T>>>,
+    old: UnsafeCell<Vec<Arc<DestroyTable<T>>>>,
 
     // Tell dropck that we own instances of T.
     marker: PhantomData<T>,
@@ -445,13 +446,28 @@ impl<T> TableRef<T> {
     }
 }
 
+struct DestroyTable<T> {
+    table: TableRef<T>,
+    lock: Mutex<bool>,
+}
+
+impl<T> DestroyTable<T> {
+    unsafe fn run(&self) {
+        let mut status = self.lock.lock();
+        if !*status {
+            *status = true;
+            self.table.free();
+        }
+    }
+}
+
 unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
             self.current.load().free();
             for table in self.old.get_mut() {
-                table.free();
+                table.run();
             }
         }
     }
@@ -655,10 +671,24 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
 
         let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
 
-        let table = self.resize(buckets, hasher);
+        let new_table = self.resize(buckets, hasher);
 
-        self.table.current.store(table);
-        table
+        self.table.current.store(new_table);
+
+        pin(|pin| {
+            let destroy = Arc::new(DestroyTable {
+                table,
+                lock: Mutex::new(false),
+            });
+
+            unsafe {
+                (*self.table.old.get()).push(destroy.clone());
+
+                pin.guard().defer_unchecked(move || destroy.run());
+            }
+        });
+
+        new_table
     }
 
     /// Allocates a new table of a different size and moves the contents of the
@@ -693,8 +723,6 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
             }
 
             *guard = None;
-
-            (*self.table.old.get()).push(table);
 
             new_table
         }

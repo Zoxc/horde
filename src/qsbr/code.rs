@@ -1,8 +1,7 @@
 use crate::qsbr;
 use crossbeam_epoch::Guard;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::Pin;
+use super::{Init, Pin};
 
 #[inline(never)]
 #[no_mangle]
@@ -15,6 +14,16 @@ unsafe fn dummy() {
 #[no_mangle]
 unsafe fn pin_test() {
     qsbr::pin(|_| dummy());
+}
+
+#[no_mangle]
+unsafe fn init_new_test() -> Init {
+    Init::new()
+}
+
+#[no_mangle]
+unsafe fn init_pin_test(init: Init) {
+    init.pin(|_| dummy());
 }
 
 #[no_mangle]
