@@ -1,772 +1,994 @@
-use core::borrow::Borrow;
-use core::fmt::{self, Debug};
-use core::hash::{BuildHasher, Hash};
-use core::iter::FromIterator;
-use core::mem;
-use std::{collections::hash_map::RandomState, iter::FusedIterator, marker::PhantomData};
+use crate::{
+    raw::{
+        bitmask::{BitMask, BitMaskIter},
+        imp::Group,
+    },
+    OnDrop,
+};
+use core::ptr::NonNull;
+use crossbeam_utils::atomic::AtomicCell;
+use parking_lot::{Mutex, MutexGuard};
+use std::{
+    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
+    cell::UnsafeCell,
+    intrinsics::{likely, unlikely},
+    iter::FusedIterator,
+    marker::PhantomData,
+    mem,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
-pub mod raw;
+mod code;
+mod test;
 
-use self::raw::RawIter;
-
-use self::raw::RawTable;
-
-pub type DefaultHashBuilder = RandomState;
-
-pub struct SyncInsertMap<K, V, S = DefaultHashBuilder> {
-    pub(crate) hash_builder: S,
-    pub(crate) table: RawTable<(K, V)>,
+/// A reference to a hash table bucket containing a `T`.
+///
+/// This is usually just a pointer to the element itself. However if the element
+/// is a ZST, then we instead track the index of the element in the table so
+/// that `erase` works properly.
+pub struct Bucket<T> {
+    // Actually it is pointer to next element than element itself
+    // this is needed to maintain pointer arithmetic invariants
+    // keeping direct pointer to element introduces difficulty.
+    // Using `NonNull` for variance and niche layout
+    ptr: NonNull<T>,
 }
 
-/// Ensures that a single closure type across uses of this which, in turn prevents multiple
-/// instances of any functions like RawTable::reserve from being generated
-#[inline]
-pub(crate) fn make_hasher<K, Q, V, S>(hash_builder: &S) -> impl Fn(&(Q, V)) -> u64 + '_
-where
-    K: Borrow<Q>,
-    Q: Hash,
-    S: BuildHasher,
-{
-    move |val| make_hash::<K, Q, S>(hash_builder, &val.0)
-}
-
-/// Ensures that a single closure type across uses of this which, in turn prevents multiple
-/// instances of any functions like RawTable::reserve from being generated
-#[inline]
-fn equivalent_key<Q, K, V>(k: &Q) -> impl Fn(&(K, V)) -> bool + '_
-where
-    K: Borrow<Q>,
-    Q: ?Sized + Eq,
-{
-    move |x| k.eq(x.0.borrow())
-}
-
-#[inline]
-pub(crate) fn make_hash<K, Q, S>(hash_builder: &S, val: &Q) -> u64
-where
-    K: Borrow<Q>,
-    Q: Hash + ?Sized,
-    S: BuildHasher,
-{
-    use core::hash::Hasher;
-    let mut state = hash_builder.build_hasher();
-    val.hash(&mut state);
-    state.finish()
-}
-
-#[inline]
-pub(crate) fn make_insert_hash<K, S>(hash_builder: &S, val: &K) -> u64
-where
-    K: Hash,
-    S: BuildHasher,
-{
-    use core::hash::Hasher;
-    let mut state = hash_builder.build_hasher();
-    val.hash(&mut state);
-    state.finish()
-}
-
-impl<K, V> SyncInsertMap<K, V, DefaultHashBuilder> {
-    /// Creates an empty `SyncInsertMap`.
-    ///
-    /// The hash map is initially created with a capacity of 0, so it will not allocate until it
-    /// is first inserted into.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// let mut map: SyncInsertMap<&str, i32> = SyncInsertMap::new();
-    /// ```
+impl<T> Clone for Bucket<T> {
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Creates an empty `SyncInsertMap` with the specified capacity.
-    ///
-    /// The hash map will be able to hold at least `capacity` elements without
-    /// reallocating. If `capacity` is 0, the hash map will not allocate.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// let mut map: SyncInsertMap<&str, i32> = SyncInsertMap::with_capacity(10);
-    /// ```
-    #[inline]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self::with_capacity_and_hasher(capacity, DefaultHashBuilder::default())
+    fn clone(&self) -> Self {
+        Self { ptr: self.ptr }
     }
 }
 
-impl<K, V, S> SyncInsertMap<K, V, S> {
-    /// Creates an empty `SyncInsertMap` which will use the given hash builder to hash
-    /// keys.
-    ///
-    /// The created map has the default initial capacity.
-    ///
-    /// Warning: `hash_builder` is normally randomly generated, and
-    /// is designed to allow HashMaps to be resistant to attacks that
-    /// cause many collisions and very poor performance. Setting it
-    /// manually using this function can expose a DoS attack vector.
-    ///
-    /// The `hash_builder` passed should implement the [`BuildHasher`] trait for
-    /// the SyncInsertMap to be useful, see its documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// use hashbrown::hash_map::DefaultHashBuilder;
-    ///
-    /// let s = DefaultHashBuilder::default();
-    /// let mut map = SyncInsertMap::with_hasher(s);
-    /// map.insert(1, 2);
-    /// ```
-    ///
-    /// [`BuildHasher`]: ../../std/hash/trait.BuildHasher.html
+impl<T> Bucket<T> {
     #[inline]
-    pub const fn with_hasher(hash_builder: S) -> Self {
+    pub fn as_ptr(&self) -> *mut T {
+        if mem::size_of::<T>() == 0 {
+            // Just return an arbitrary ZST pointer which is properly aligned
+            mem::align_of::<T>() as *mut T
+        } else {
+            unsafe { self.ptr.as_ptr().sub(1) }
+        }
+    }
+    #[inline]
+    unsafe fn next_n(&self, offset: usize) -> Self {
+        let ptr = if mem::size_of::<T>() == 0 {
+            (self.ptr.as_ptr() as usize + offset) as *mut T
+        } else {
+            self.ptr.as_ptr().sub(offset)
+        };
         Self {
-            hash_builder,
-            table: RawTable::new(),
+            ptr: NonNull::new_unchecked(ptr),
+        }
+    }
+    #[inline]
+    pub unsafe fn drop(&self) {
+        self.as_ptr().drop_in_place();
+    }
+    #[inline]
+    pub unsafe fn read(&self) -> T {
+        self.as_ptr().read()
+    }
+    #[inline]
+    pub unsafe fn write(&self, val: T) {
+        self.as_ptr().write(val);
+    }
+    #[inline]
+    pub unsafe fn as_ref<'a>(&self) -> &'a T {
+        &*self.as_ptr()
+    }
+    #[inline]
+    pub unsafe fn as_mut<'a>(&self) -> &'a mut T {
+        &mut *self.as_ptr()
+    }
+    #[inline]
+    pub unsafe fn copy_from_nonoverlapping(&self, other: &Self) {
+        self.as_ptr().copy_from_nonoverlapping(other.as_ptr(), 1);
+    }
+}
+
+/// A raw hash table with an unsafe API.
+pub struct SyncInsertMap<T> {
+    current: AtomicCell<TableRef<T>>,
+
+    lock: Mutex<()>,
+
+    old: UnsafeCell<Vec<TableRef<T>>>,
+
+    // Tell dropck that we own instances of T.
+    marker: PhantomData<T>,
+}
+
+struct TableInfo {
+    // Mask to get an index from a hash value. The value is one less than the
+    // number of buckets in the table.
+    bucket_mask: usize,
+
+    // Number of elements that can be inserted before we need to grow the table
+    growth_left: usize,
+
+    // Number of elements in the table, only really used by len()
+    items: usize,
+}
+
+impl TableInfo {
+    #[inline]
+    fn num_ctrl_bytes(&self) -> usize {
+        self.buckets() + Group::WIDTH
+    }
+
+    /// Returns the number of buckets in the table.
+    #[inline]
+    pub fn buckets(&self) -> usize {
+        self.bucket_mask + 1
+    }
+
+    /// Returns a pointer to a control byte.
+    #[inline]
+    unsafe fn ctrl(&self, index: usize) -> *mut u8 {
+        debug_assert!(index < self.num_ctrl_bytes());
+
+        let info = Layout::new::<TableInfo>();
+        let control = Layout::new::<Group>();
+        let offset = info.extend(control).unwrap().1;
+
+        let ctrl = (self as *const TableInfo as *mut u8).add(offset);
+
+        ctrl.add(index)
+    }
+
+    /// Sets a control byte, and possibly also the replicated control byte at
+    /// the end of the array.
+    #[inline]
+    unsafe fn set_ctrl(&self, index: usize, ctrl: u8) {
+        // Replicate the first Group::WIDTH control bytes at the end of
+        // the array without using a branch:
+        // - If index >= Group::WIDTH then index == index2.
+        // - Otherwise index2 == self.bucket_mask + 1 + index.
+        //
+        // The very last replicated control byte is never actually read because
+        // we mask the initial index for unaligned loads, but we write it
+        // anyways because it makes the set_ctrl implementation simpler.
+        //
+        // If there are fewer buckets than Group::WIDTH then this code will
+        // replicate the buckets at the end of the trailing group. For example
+        // with 2 buckets and a group size of 4, the control bytes will look
+        // like this:
+        //
+        //     Real    |             Replicated
+        // ---------------------------------------------
+        // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
+        // ---------------------------------------------
+        let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
+
+        *self.ctrl(index) = ctrl;
+        *self.ctrl(index2) = ctrl;
+    }
+
+    /// Sets a control byte, and possibly also the replicated control byte at
+    /// the end of the array. Same as set_ctrl, but uses release stores.
+    #[inline]
+    unsafe fn set_ctrl_release(&self, index: usize, ctrl: u8) {
+        let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
+
+        (*(self.ctrl(index) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+        (*(self.ctrl(index2) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+    }
+
+    /// Sets a control byte to the hash, and possibly also the replicated control byte at
+    /// the end of the array.
+    #[inline]
+    unsafe fn set_ctrl_h2(&self, index: usize, hash: u64) {
+        self.set_ctrl(index, h2(hash))
+    }
+
+    #[inline]
+    unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
+        self.growth_left -= 1;
+        self.set_ctrl_release(index, h2(hash));
+        self.items += 1;
+    }
+
+    /// Searches for an empty or deleted bucket which is suitable for inserting
+    /// a new element and sets the hash for that slot.
+    ///
+    /// There must be at least 1 empty bucket in the table.
+    #[inline]
+    unsafe fn prepare_insert_slot(&self, hash: u64) -> (usize, u8) {
+        let index = self.find_insert_slot(hash);
+        let old_ctrl = *self.ctrl(index);
+        self.set_ctrl_h2(index, hash);
+        (index, old_ctrl)
+    }
+
+    /// Searches for an empty or deleted bucket which is suitable for inserting
+    /// a new element.
+    ///
+    /// There must be at least 1 empty bucket in the table.
+    #[inline]
+    unsafe fn find_insert_slot(&self, hash: u64) -> usize {
+        let mut probe_seq = self.probe_seq(hash);
+        loop {
+            let group = Group::load(self.ctrl(probe_seq.pos));
+            if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
+                let result = (probe_seq.pos + bit) & self.bucket_mask;
+
+                // In tables smaller than the group width, trailing control
+                // bytes outside the range of the table are filled with
+                // EMPTY entries. These will unfortunately trigger a
+                // match, but once masked may point to a full bucket that
+                // is already occupied. We detect this situation here and
+                // perform a second scan starting at the begining of the
+                // table. This second scan is guaranteed to find an empty
+                // slot (due to the load factor) before hitting the trailing
+                // control bytes (containing EMPTY).
+                if unlikely(is_full(*self.ctrl(result))) {
+                    debug_assert!(self.bucket_mask < Group::WIDTH);
+                    debug_assert_ne!(probe_seq.pos, 0);
+                    return Group::load_aligned(self.ctrl(0))
+                        .match_empty_or_deleted()
+                        .lowest_set_bit_nonzero();
+                }
+
+                return result;
+            }
+            probe_seq.move_next(self.bucket_mask);
         }
     }
 
-    /// Creates an empty `SyncInsertMap` with the specified capacity, using `hash_builder`
-    /// to hash the keys.
+    /// Returns an iterator-like object for a probe sequence on the table.
     ///
-    /// The hash map will be able to hold at least `capacity` elements without
-    /// reallocating. If `capacity` is 0, the hash map will not allocate.
-    ///
-    /// Warning: `hash_builder` is normally randomly generated, and
-    /// is designed to allow HashMaps to be resistant to attacks that
-    /// cause many collisions and very poor performance. Setting it
-    /// manually using this function can expose a DoS attack vector.
-    ///
-    /// The `hash_builder` passed should implement the [`BuildHasher`] trait for
-    /// the SyncInsertMap to be useful, see its documentation for details.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// use hashbrown::hash_map::DefaultHashBuilder;
-    ///
-    /// let s = DefaultHashBuilder::default();
-    /// let mut map = SyncInsertMap::with_capacity_and_hasher(10, s);
-    /// map.insert(1, 2);
-    /// ```
-    ///
-    /// [`BuildHasher`]: ../../std/hash/trait.BuildHasher.html
+    /// This iterator never terminates, but is guaranteed to visit each bucket
+    /// group exactly once. The loop using `probe_seq` must terminate upon
+    /// reaching a group containing an empty bucket.
     #[inline]
-    pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
+    unsafe fn probe_seq(&self, hash: u64) -> ProbeSeq {
+        ProbeSeq {
+            pos: h1(hash) & self.bucket_mask,
+            stride: 0,
+        }
+    }
+}
+
+#[repr(transparent)]
+struct TableRef<T> {
+    data: NonNull<TableInfo>,
+
+    marker: PhantomData<*mut T>,
+}
+
+impl<T> Copy for TableRef<T> {}
+impl<T> Clone for TableRef<T> {
+    #[inline]
+    fn clone(&self) -> Self {
         Self {
-            hash_builder,
-            table: RawTable::with_capacity(capacity),
+            data: self.data,
+            marker: self.marker,
+        }
+    }
+}
+
+impl<T> TableRef<T> {
+    #[inline]
+    fn empty() -> Self {
+        // FIXME: Figure out if we need this to be aligned to `T`, even though no references to `T`
+        // should be created from it.
+        // There can be padding bytes at the end of a real layout to make it a multiple of the
+        // alignment, but these aren't accessed in practise.
+        #[repr(C)]
+        struct EmptyTable {
+            info: TableInfo,
+            control_bytes: [Group; 1],
+        }
+
+        if cfg!(debug_assertions) {
+            let real = Self::layout(0).unwrap().0;
+            let dummy = Layout::new::<EmptyTable>().align_to(real.align()).unwrap();
+            debug_assert_eq!(real, dummy);
+        }
+
+        let empty: &'static EmptyTable = &EmptyTable {
+            info: TableInfo {
+                bucket_mask: 0,
+                growth_left: 0,
+                items: 0,
+            },
+            control_bytes: [Group::EMPTY; 1],
+        };
+
+        Self {
+            data: unsafe { NonNull::new_unchecked(empty as *const EmptyTable as *mut TableInfo) },
+            marker: PhantomData,
         }
     }
 
-    /// Returns a reference to the map's [`BuildHasher`].
-    ///
-    /// [`BuildHasher`]: https://doc.rust-lang.org/std/hash/trait.BuildHasher.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// use hashbrown::hash_map::DefaultHashBuilder;
-    ///
-    /// let hasher = DefaultHashBuilder::default();
-    /// let map: SyncInsertMap<i32, i32> = SyncInsertMap::with_hasher(hasher);
-    /// let hasher: &DefaultHashBuilder = map.hasher();
-    /// ```
     #[inline]
-    pub fn hasher(&self) -> &S {
-        &self.hash_builder
+    fn layout(bucket_count: usize) -> Result<(Layout, usize), LayoutError> {
+        let buckets = Layout::new::<T>().repeat(bucket_count)?.0;
+        let info = Layout::new::<TableInfo>();
+        let control =
+            Layout::array::<u8>(bucket_count + Group::WIDTH)?.align_to(mem::align_of::<Group>())?;
+        let (total, info_offet) = buckets.extend(info)?;
+        Ok((total.extend(control)?.0, info_offet))
     }
 
-    /// Returns the number of elements the map can hold without reallocating.
-    ///
-    /// This number is a lower bound; the `SyncInsertMap<K, V>` might be able to hold
-    /// more, but is guaranteed to be able to hold at least this many.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// let map: SyncInsertMap<i32, i32> = SyncInsertMap::with_capacity(100);
-    /// assert!(map.capacity() >= 100);
-    /// ```
     #[inline]
-    pub fn capacity(&self) -> usize {
-        self.table.capacity()
-    }
+    fn allocate(bucket_count: usize) -> Self {
+        let (layout, info_offset) = Self::layout(bucket_count).expect("capacity overflow");
 
-    #[cfg(test)]
-    #[inline]
-    fn raw_capacity(&self) -> usize {
-        self.table.buckets()
-    }
+        let ptr: NonNull<u8> = Global
+            .allocate(layout)
+            .map(|ptr| ptr.cast())
+            .unwrap_or_else(|_| handle_alloc_error(layout));
 
-    /// Returns the number of elements in the map.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    ///
-    /// let mut a = SyncInsertMap::new();
-    /// assert_eq!(a.len(), 0);
-    /// a.insert(1, "a");
-    /// assert_eq!(a.len(), 1);
-    /// ```
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.table.len()
-    }
+        let info =
+            unsafe { NonNull::new_unchecked(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
 
-    /// Returns `true` if the map contains no elements.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    ///
-    /// let mut a = SyncInsertMap::new();
-    /// assert!(a.is_empty());
-    /// a.insert(1, "a");
-    /// assert!(!a.is_empty());
-    /// ```
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
+        let mut result = Self {
+            data: info,
+            marker: PhantomData,
+        };
 
-    /// An iterator visiting all key-value pairs in arbitrary order.
-    /// The iterator element type is `(&'a K, &'a V)`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::HashMap;
-    ///
-    /// let mut map = HashMap::new();
-    /// map.insert("a", 1);
-    /// map.insert("b", 2);
-    /// map.insert("c", 3);
-    ///
-    /// for (key, val) in map.iter() {
-    ///     println!("key: {} val: {}", key, val);
-    /// }
-    /// ```
-    #[inline]
-    pub fn iter(&self) -> Iter<'_, K, V> {
-        // Here we tie the lifetime of self to the iter.
         unsafe {
-            Iter {
-                inner: self.table.iter(),
-                marker: PhantomData,
+            *result.info_mut() = TableInfo {
+                bucket_mask: bucket_count - 1,
+                growth_left: bucket_mask_to_capacity(bucket_count - 1),
+                items: 0,
+            };
+
+            result
+                .info()
+                .ctrl(0)
+                .write_bytes(EMPTY, result.info().num_ctrl_bytes());
+        }
+
+        result
+    }
+
+    #[inline]
+    unsafe fn free(self) {
+        if self.info().items > 0 {
+            self.iter().drop_elements();
+            Global.deallocate(
+                NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
+                Self::layout(self.info().buckets()).unwrap_unchecked().0,
+            )
+        }
+    }
+
+    unsafe fn info(&self) -> &TableInfo {
+        self.data.as_ref()
+    }
+
+    unsafe fn info_mut(&mut self) -> &mut TableInfo {
+        self.data.as_mut()
+    }
+
+    #[inline]
+    pub unsafe fn bucket_before_first(&self) -> *mut T {
+        self.bucket_past_last().sub(self.info().buckets())
+    }
+
+    #[inline]
+    pub unsafe fn bucket_past_last(&self) -> *mut T {
+        let buckets = Layout::new::<T>()
+            .repeat(self.info().buckets())
+            .unwrap_unchecked()
+            .0;
+        let buckets_size = buckets.size();
+        let info = Layout::new::<TableInfo>();
+        let info_offet = buckets.extend(info).unwrap_unchecked().1;
+        let info_padding = info_offet - buckets_size;
+        (self.data.as_ptr() as *const u8).sub(info_padding) as *mut T
+    }
+
+    /// Returns a pointer to an element in the table.
+    #[inline]
+    pub unsafe fn bucket(&self, index: usize) -> Bucket<T> {
+        debug_assert!(index < self.info().buckets());
+
+        Bucket {
+            ptr: NonNull::new_unchecked(self.bucket_past_last().sub(index)),
+        }
+    }
+
+    /// Returns an iterator over occupied buckets that could match a given hash.
+    ///
+    /// In rare cases, the iterator may return a bucket with a different hash.
+    ///
+    /// It is up to the caller to ensure that the `SyncInsertMap` outlives the
+    /// `RawIterHash`. Because we cannot make the `next` method unsafe on the
+    /// `RawIterHash` struct, we have to make the `iter_hash` method unsafe.
+    #[inline]
+    pub unsafe fn iter_hash(&self, hash: u64) -> RawIterHash<'_, T> {
+        RawIterHash::new(*self, self.info(), hash)
+    }
+
+    /// Returns an iterator over every element in the table. It is up to
+    /// the caller to ensure that the `SyncInsertMap` outlives the `RawIter`.
+    /// Because we cannot make the `next` method unsafe on the `RawIter`
+    /// struct, we have to make the `iter` method unsafe.
+    #[inline]
+    pub unsafe fn iter(&self) -> RawIter<T> {
+        let data = Bucket {
+            ptr: NonNull::new_unchecked(self.bucket_past_last()),
+        };
+        RawIter {
+            iter: RawIterRange::new(self.info().ctrl(0), data, self.info().buckets()),
+            items: self.info().items,
+        }
+    }
+}
+
+unsafe impl<#[may_dangle] T> Drop for SyncInsertMap<T> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            self.current.load().free();
+            for table in self.old.get_mut() {
+                table.free();
             }
         }
     }
 }
 
-impl<K, V, S> SyncInsertMap<K, V, S>
-where
-    K: Eq + Hash + Clone,
-    V: Clone,
-    S: BuildHasher,
-{
-    /// Reserves capacity for at least `additional` more elements to be inserted
-    /// in the `SyncInsertMap`. The collection may reserve more space to avoid
-    /// frequent reallocations.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the new allocation size overflows [`usize`].
-    ///
-    /// [`usize`]: https://doc.rust-lang.org/std/primitive.usize.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    /// let mut map: SyncInsertMap<&str, i32> = SyncInsertMap::new();
-    /// map.reserve(10);
-    /// ```
+unsafe impl<T: Send> Send for SyncInsertMap<T> {}
+unsafe impl<T: Send> Sync for SyncInsertMap<T> {}
+
+impl<T> SyncInsertMap<T> {
     #[inline]
-    pub fn reserve(&mut self, additional: usize) {
-        self.table.reserve_with_guard(
-            additional,
-            make_hasher::<K, _, V, S>(&self.hash_builder),
-            &mut self.table.mutex().lock(),
-        );
+    pub fn new() -> Self {
+        Self {
+            current: AtomicCell::new(TableRef::empty()),
+            old: UnsafeCell::new(Vec::new()),
+            marker: PhantomData,
+            lock: Mutex::new(()),
+        }
     }
 
-    /// Inserts a key-value pair into the map.
-    ///
-    /// If the map did not have this key present, [`None`] is returned.
-    ///
-    /// If the map did have this key present, the value is updated, and the old
-    /// value is returned. The key is not updated, though; this matters for
-    /// types that can be `==` without being identical. See the [module-level
-    /// documentation] for more.
-    ///
-    /// [`None`]: https://doc.rust-lang.org/std/option/enum.Option.html#variant.None
-    /// [module-level documentation]: index.html#insert-and-complex-keys
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    ///
-    /// let mut map = SyncInsertMap::new();
-    /// assert_eq!(map.insert(37, "a"), None);
-    /// assert_eq!(map.is_empty(), false);
-    ///
-    /// map.insert(37, "b");
-    /// assert_eq!(map.insert(37, "c"), Some("b"));
-    /// assert_eq!(map[&37], "c");
-    /// ```
     #[inline]
-    pub fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let hash = make_insert_hash::<K, S>(&self.hash_builder, &k);
-        if let Some((_, item)) = self.table.get_mut(hash, equivalent_key(&k)) {
-            Some(mem::replace(item, v))
-        } else {
-            self.table
-                .insert(hash, (k, v), make_hasher::<K, _, V, S>(&self.hash_builder));
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            current: AtomicCell::new(TableRef::allocate(
+                capacity_to_buckets(capacity).expect("capacity overflow"),
+            )),
+            old: UnsafeCell::new(Vec::new()),
+            marker: PhantomData,
+            lock: Mutex::new(()),
+        }
+    }
+
+    /// Searches for an element in the table.
+    #[inline]
+    pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+        let table = self.current.load();
+        unsafe {
+            for bucket in table.iter_hash(hash) {
+                let elm = bucket.as_ref();
+                if likely(eq(elm)) {
+                    return Some(bucket);
+                }
+            }
             None
         }
     }
-}
 
-impl<K, V, S> SyncInsertMap<K, V, S>
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    /// Returns a reference to the value corresponding to the key.
-    ///
-    /// The key may be any borrowed form of the map's key type, but
-    /// [`Hash`] and [`Eq`] on the borrowed form *must* match those for
-    /// the key type.
-    ///
-    /// [`Eq`]: https://doc.rust-lang.org/std/cmp/trait.Eq.html
-    /// [`Hash`]: https://doc.rust-lang.org/std/hash/trait.Hash.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    ///
-    /// let mut map = SyncInsertMap::new();
-    /// map.insert(1, "a");
-    /// assert_eq!(map.get(&1), Some(&"a"));
-    /// assert_eq!(map.get(&2), None);
-    /// ```
+    /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
+    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
         // Avoid `Option::map` because it bloats LLVM IR.
-        match self.get_inner(k) {
-            Some(&(_, ref v)) => Some(v),
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_ref() }),
             None => None,
         }
     }
 
-    /// Returns the key-value pair corresponding to the supplied key.
-    ///
-    /// The supplied key may be any borrowed form of the map's key type, but
-    /// [`Hash`] and [`Eq`] on the borrowed form *must* match those for
-    /// the key type.
-    ///
-    /// [`Eq`]: https://doc.rust-lang.org/std/cmp/trait.Eq.html
-    /// [`Hash`]: https://doc.rust-lang.org/std/hash/trait.Hash.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    ///
-    /// let mut map = SyncInsertMap::new();
-    /// map.insert(1, "a");
-    /// assert_eq!(map.get_key_value(&1), Some((&1, &"a")));
-    /// assert_eq!(map.get_key_value(&2), None);
-    /// ```
+    /// Gets a mutable reference to an element in the table.
     #[inline]
-    pub fn get_key_value<Q: ?Sized>(&self, k: &Q) -> Option<(&K, &V)>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
+    pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
         // Avoid `Option::map` because it bloats LLVM IR.
-        match self.get_inner(k) {
-            Some(&(ref key, ref value)) => Some((key, value)),
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_mut() }),
             None => None,
         }
     }
 
+    /// Returns the number of elements the map can hold without reallocating.
+    ///
+    /// This number is a lower bound; the table might be able to hold
+    /// more, but is guaranteed to be able to hold at least this many.
     #[inline]
-    fn get_inner<Q: ?Sized>(&self, k: &Q) -> Option<&(K, V)>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let hash = make_hash::<K, Q, S>(&self.hash_builder, k);
-        self.table.get(hash, equivalent_key(k))
+    pub fn capacity(&self) -> usize {
+        unsafe {
+            let table = self.current.load();
+            let info = table.info();
+            info.items + info.growth_left
+        }
     }
 
-    /// Returns `true` if the map contains a value for the specified key.
-    ///
-    /// The key may be any borrowed form of the map's key type, but
-    /// [`Hash`] and [`Eq`] on the borrowed form *must* match those for
-    /// the key type.
-    ///
-    /// [`Eq`]: https://doc.rust-lang.org/std/cmp/trait.Eq.html
-    /// [`Hash`]: https://doc.rust-lang.org/std/hash/trait.Hash.html
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hashbrown::SyncInsertMap;
-    ///
-    /// let mut map = SyncInsertMap::new();
-    /// map.insert(1, "a");
-    /// assert_eq!(map.contains_key(&1), true);
-    /// assert_eq!(map.contains_key(&2), false);
-    /// ```
+    /// Returns the number of elements in the table.
     #[inline]
-    pub fn contains_key<Q: ?Sized>(&self, k: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        self.get_inner(k).is_some()
+    pub fn len(&self) -> usize {
+        unsafe { self.current.load().info().items }
     }
-}
 
-impl<K, V, S> Default for SyncInsertMap<K, V, S>
-where
-    S: Default,
-{
-    /// Creates an empty `SyncInsertMap<K, V, S>`, with the `Default` value for the hasher.
+    /// Returns the number of buckets in the table.
     #[inline]
-    fn default() -> Self {
-        Self::with_hasher(Default::default())
+    pub fn buckets(&self) -> usize {
+        // FIXME: Needs to hold QSBR token to be safe
+        unsafe { self.current.load().info().buckets() }
+    }
+
+    #[inline]
+    pub fn mutex(&self) -> &Mutex<()> {
+        &self.lock
+    }
+
+    #[inline]
+    pub fn iter(&self) -> RawIter<T> {
+        let table = self.current.load();
+        unsafe { table.iter() }
     }
 }
 
-impl<K, V, S> FromIterator<(K, V)> for SyncInsertMap<K, V, S>
-where
-    K: Eq + Hash + Clone,
-    V: Clone,
-    S: BuildHasher + Default,
-{
+impl<T: Clone> SyncInsertMap<T> {
+    /// Inserts a new element into the table, and returns its raw bucket.
+    ///
+    /// This does not check if the given element already exists in the table.
     #[inline]
-    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let iter = iter.into_iter();
-        let mut map = Self::with_capacity_and_hasher(iter.size_hint().0, S::default());
-        iter.for_each(|(k, v)| {
-            map.insert(k, v);
-        });
-        map
-    }
-}
+    pub fn insert_with_guard(
+        &self,
+        hash: u64,
+        value: T,
+        hasher: impl Fn(&T) -> u64,
+        guard: &mut MutexGuard<'_, ()>,
+    ) -> Bucket<T> {
+        // Verify that we are locked
+        assert_eq!(&self.lock as *const _, MutexGuard::mutex(guard) as *const _);
 
-impl<K, V, S> Debug for SyncInsertMap<K, V, S>
-where
-    K: Debug,
-    V: Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map().entries(self.iter()).finish()
-    }
-}
+        let mut table = self.current.load();
 
-/// Inserts all new key-values from the iterator and replaces values with existing
-/// keys with new values returned from the iterator.
-impl<K, V, S> Extend<(K, V)> for SyncInsertMap<K, V, S>
-where
-    K: Eq + Hash + Clone,
-    V: Clone,
-    S: BuildHasher,
-{
+        unsafe {
+            if unlikely(table.info().growth_left == 0) {
+                table = self.locked_reserve(1, &hasher);
+            }
+
+            let index = table.info().find_insert_slot(hash);
+
+            let bucket = table.bucket(index);
+            bucket.write(value);
+
+            table.info_mut().record_item_insert_at(index, hash);
+
+            bucket
+        }
+    }
+
+    /// Inserts a new element into the table, and returns its raw bucket.
+    ///
+    /// This does not check if the given element already exists in the table.
     #[inline]
-    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
-        // Keys may be already present or show multiple times in the iterator.
-        // Reserve the entire hint lower bound if the map is empty.
-        // Otherwise reserve half the hint (rounded up), so the map
-        // will only resize twice in the worst case.
-        let iter = iter.into_iter();
-        let reserve = if self.is_empty() {
-            iter.size_hint().0
-        } else {
-            (iter.size_hint().0 + 1) / 2
+    pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
+        self.insert_with_guard(hash, value, hasher, &mut self.lock.lock())
+    }
+
+    #[inline]
+    pub fn reserve_with_guard(
+        &self,
+        additional: usize,
+        hasher: impl Fn(&T) -> u64,
+        guard: &mut MutexGuard<'_, ()>,
+    ) {
+        // Verify that we are locked
+        assert_eq!(&self.lock as *const _, MutexGuard::mutex(guard) as *const _);
+
+        self.locked_reserve(additional, &hasher);
+    }
+
+    /// Out-of-line slow path for `reserve` and `try_reserve`.
+    #[cold]
+    #[inline(never)]
+    fn locked_reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
+        let table = self.current.load();
+
+        // Avoid `Option::ok_or_else` because it bloats LLVM IR.
+        let new_items = match unsafe { table.info() }.items.checked_add(additional) {
+            Some(new_items) => new_items,
+            None => panic!("capacity overflow"),
         };
-        self.reserve(reserve);
-        iter.for_each(move |(k, v)| {
-            self.insert(k, v);
-        });
+
+        let buckets = unsafe { (table.info().bucket_mask + 1) << 2 };
+
+        let table = self.resize(buckets, hasher);
+
+        self.current.store(table);
+        table
     }
 
-    #[inline]
-    #[cfg(feature = "nightly")]
-    fn extend_one(&mut self, (k, v): (K, V)) {
-        self.insert(k, v);
-    }
+    /// Allocates a new table of a different size and moves the contents of the
+    /// current table into it.
+    fn resize(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+        let table = self.current.load();
+        unsafe {
+            debug_assert!(table.info().items <= bucket_mask_to_capacity(buckets - 1));
+        }
 
-    #[inline]
-    #[cfg(feature = "nightly")]
-    fn extend_reserve(&mut self, additional: usize) {
-        // Keys may be already present or show multiple times in the iterator.
-        // Reserve the entire hint lower bound if the map is empty.
-        // Otherwise reserve half the hint (rounded up), so the map
-        // will only resize twice in the worst case.
-        let reserve = if self.is_empty() {
-            additional
-        } else {
-            (additional + 1) / 2
-        };
-        self.reserve(reserve);
+        unsafe {
+            let mut new_table = TableRef::allocate(buckets);
+
+            new_table.info_mut().items = table.info().items;
+            new_table.info_mut().growth_left -= table.info().items;
+
+            let guard = OnDrop(|| new_table.free());
+
+            // Copy all elements to the new table.
+            for item in table.iter() {
+                // This may panic.
+                let hash = hasher(item.as_ref());
+
+                // We can use a simpler version of insert() here since:
+                // - there are no DELETED entries.
+                // - we know there is enough space in the table.
+                // - all elements are unique.
+                let (index, _) = new_table.info().prepare_insert_slot(hash);
+
+                // FIXME: Scheme to drop items on panic?
+
+                // Clone may panic
+                new_table.bucket(index).write(item.as_ref().clone());
+            }
+
+            guard.disable();
+
+            (*self.old.get()).push(table);
+
+            new_table
+        }
     }
 }
 
-impl<'a, K, V, S> Extend<(&'a K, &'a V)> for SyncInsertMap<K, V, S>
-where
-    K: Eq + Hash + Copy,
-    V: Copy,
-    S: BuildHasher,
-{
-    #[inline]
-    fn extend<T: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: T) {
-        self.extend(iter.into_iter().map(|(&key, &value)| (key, value)));
-    }
-
-    #[inline]
-    #[cfg(feature = "nightly")]
-    fn extend_one(&mut self, (k, v): (&'a K, &'a V)) {
-        self.insert(*k, *v);
-    }
-
-    #[inline]
-    #[cfg(feature = "nightly")]
-    fn extend_reserve(&mut self, additional: usize) {
-        Extend::<(K, V)>::extend_reserve(self, additional);
+/// Returns the maximum effective capacity for the given bucket mask, taking
+/// the maximum load factor into account.
+#[inline]
+fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
+    if bucket_mask < 16 {
+        // For tables with 1/2/4/8 buckets, we always reserve one empty slot.
+        // Keep in mind that the bucket mask is one less than the bucket count.
+        bucket_mask
+    } else {
+        // For larger tables we reserve 12.5% of the slots as empty.
+        ((bucket_mask + 1) / 8) * 7
     }
 }
 
-/// An iterator over the entries of a `HashMap`.
+/// Returns the number of buckets needed to hold the given number of items,
+/// taking the maximum load factor into account.
 ///
-/// This `struct` is created by the [`iter`] method on [`HashMap`]. See its
-/// documentation for more.
-///
-/// [`iter`]: struct.HashMap.html#method.iter
-/// [`HashMap`]: struct.HashMap.html
-pub struct Iter<'a, K, V> {
-    inner: RawIter<(K, V)>,
-    marker: PhantomData<(&'a K, &'a V)>,
+/// Returns `None` if an overflow occurs.
+// Workaround for emscripten bug emscripten-core/emscripten-fastcomp#258
+#[cfg_attr(target_os = "emscripten", inline(never))]
+#[cfg_attr(not(target_os = "emscripten"), inline)]
+fn capacity_to_buckets(cap: usize) -> Option<usize> {
+    debug_assert_ne!(cap, 0);
+
+    // For small tables we require at least 1 empty bucket so that lookups are
+    // guaranteed to terminate if an element doesn't exist in the table.
+    if cap < 16 {
+        // We don't bother with a table size of 2 buckets since that can only
+        // hold a single element. Instead we skip directly to a 4 bucket table
+        // which can hold 3 elements.
+        return Some(if cap < 4 { 4 } else { 16 });
+    }
+
+    // Otherwise require 1/8 buckets to be empty (87.5% load)
+    //
+    // Be careful when modifying this, calculate_layout relies on the
+    // overflow check here.
+    let adjusted_cap = cap.checked_mul(8)? / 7;
+
+    // Any overflows will have been caught by the checked_mul. Also, any
+    // rounding errors from the division above will be cleaned up by
+    // next_power_of_two (which can't overflow because of the previous divison).
+    Some(adjusted_cap.next_power_of_two())
 }
 
-// FIXME(#26925) Remove in favor of `#[derive(Clone)]`
-impl<K, V> Clone for Iter<'_, K, V> {
+/// Primary hash function, used to select the initial bucket to probe from.
+#[inline]
+#[allow(clippy::cast_possible_truncation)]
+fn h1(hash: u64) -> usize {
+    // On 32-bit platforms we simply ignore the higher hash bits.
+    hash as usize
+}
+
+/// Secondary hash function, saved in the low 7 bits of the control byte.
+#[inline]
+#[allow(clippy::cast_possible_truncation)]
+fn h2(hash: u64) -> u8 {
+    // Grab the top 7 bits of the hash. While the hash is normally a full 64-bit
+    // value, some hash functions (such as FxHash) produce a usize result
+    // instead, which means that the top 32 bits are 0 on 32-bit platforms.
+    let hash_len = usize::min(mem::size_of::<usize>(), mem::size_of::<u64>());
+    let top7 = hash >> (hash_len * 8 - 7);
+    (top7 & 0x7f) as u8 // truncation
+}
+
+/// Control byte value for an empty bucket.
+const EMPTY: u8 = 0b1111_1111;
+
+/// Checks whether a control byte represents a full bucket (top bit is clear).
+#[inline]
+fn is_full(ctrl: u8) -> bool {
+    ctrl & 0x80 == 0
+}
+
+/// Probe sequence based on triangular numbers, which is guaranteed (since our
+/// table size is a power of two) to visit every group of elements exactly once.
+///
+/// A triangular probe has us jump by 1 more group every time. So first we
+/// jump by 1 group (meaning we just continue our linear scan), then 2 groups
+/// (skipping over 1 group), then 3 groups (skipping over 2 groups), and so on.
+///
+/// Proof that the probe will visit every group in the table:
+/// <https://fgiesen.wordpress.com/2015/02/22/triangular-numbers-mod-2n/>
+struct ProbeSeq {
+    pos: usize,
+    stride: usize,
+}
+
+impl ProbeSeq {
+    #[inline]
+    fn move_next(&mut self, bucket_mask: usize) {
+        // We should have found an empty bucket by now and ended the probe.
+        debug_assert!(
+            self.stride <= bucket_mask,
+            "Went past end of probe sequence"
+        );
+
+        self.stride += Group::WIDTH;
+        self.pos += self.stride;
+        self.pos &= bucket_mask;
+    }
+}
+
+/// Iterator over occupied buckets that could match a given hash.
+///
+/// In rare cases, the iterator may return a bucket with a different hash.
+pub struct RawIterHash<'a, T> {
+    table: TableRef<T>,
+    inner: RawIterHashInner<'a>,
+    _marker: PhantomData<T>,
+}
+
+struct RawIterHashInner<'a> {
+    table: &'a TableInfo,
+
+    // The top 7 bits of the hash.
+    h2_hash: u8,
+
+    // The sequence of groups to probe in the search.
+    probe_seq: ProbeSeq,
+
+    group: Group,
+
+    // The elements within the group with a matching h2-hash.
+    bitmask: BitMaskIter,
+}
+
+impl<'a, T> RawIterHash<'a, T> {
+    #[inline]
+    fn new(table: TableRef<T>, info: &'a TableInfo, hash: u64) -> Self {
+        RawIterHash {
+            table,
+            inner: RawIterHashInner::new(info, hash),
+            _marker: PhantomData,
+        }
+    }
+}
+impl<'a> RawIterHashInner<'a> {
+    #[inline]
+    fn new(table: &'a TableInfo, hash: u64) -> Self {
+        unsafe {
+            let h2_hash = h2(hash);
+            let probe_seq = table.probe_seq(hash);
+            let group = Group::load(table.ctrl(probe_seq.pos));
+            let bitmask = group.match_byte(h2_hash).into_iter();
+
+            RawIterHashInner {
+                table,
+                h2_hash,
+                probe_seq,
+                group,
+                bitmask,
+            }
+        }
+    }
+}
+
+impl<'a, T> Iterator for RawIterHash<'a, T> {
+    type Item = Bucket<T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Bucket<T>> {
+        unsafe {
+            match self.inner.next() {
+                Some(index) => Some(self.table.bucket(index)),
+                None => None,
+            }
+        }
+    }
+}
+
+impl<'a> Iterator for RawIterHashInner<'a> {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe {
+            loop {
+                if let Some(bit) = self.bitmask.next() {
+                    let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
+                    return Some(index);
+                }
+                if likely(self.group.match_empty().any_bit_set()) {
+                    return None;
+                }
+                self.probe_seq.move_next(self.table.bucket_mask);
+                self.group = Group::load(self.table.ctrl(self.probe_seq.pos));
+                self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
+            }
+        }
+    }
+}
+
+/// Iterator over a sub-range of a table. Unlike `RawIter` this iterator does
+/// not track an item count.
+pub(crate) struct RawIterRange<T> {
+    // Mask of full buckets in the current group. Bits are cleared from this
+    // mask as each element is processed.
+    current_group: BitMask,
+
+    // Pointer to the buckets for the current group.
+    data: Bucket<T>,
+
+    // Pointer to the next group of control bytes,
+    // Must be aligned to the group size.
+    next_ctrl: *const u8,
+
+    // Pointer one past the last control byte of this range.
+    end: *const u8,
+}
+
+impl<T> RawIterRange<T> {
+    /// Returns a `RawIterRange` covering a subset of a table.
+    ///
+    /// The control byte address must be aligned to the group size.
+    #[inline]
+    unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
+        debug_assert_ne!(len, 0);
+        debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
+        let end = ctrl.add(len);
+
+        // Load the first group and advance ctrl to point to the next group
+        let current_group = Group::load_aligned(ctrl).match_full();
+        let next_ctrl = ctrl.add(Group::WIDTH);
+
+        Self {
+            current_group,
+            data,
+            next_ctrl,
+            end,
+        }
+    }
+}
+
+// We make raw iterators unconditionally Send and Sync, and let the PhantomData
+// in the actual iterator implementations determine the real Send/Sync bounds.
+unsafe impl<T> Send for RawIterRange<T> {}
+unsafe impl<T> Sync for RawIterRange<T> {}
+
+impl<T> Clone for RawIterRange<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Iter {
-            inner: self.inner.clone(),
-            marker: PhantomData,
+        Self {
+            data: self.data.clone(),
+            next_ctrl: self.next_ctrl,
+            current_group: self.current_group,
+            end: self.end,
         }
     }
 }
 
-impl<'a, K, V> Iterator for Iter<'a, K, V> {
-    type Item = (&'a K, &'a V);
+impl<T> Iterator for RawIterRange<T> {
+    type Item = Bucket<T>;
 
     #[inline]
-    fn next(&mut self) -> Option<(&'a K, &'a V)> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.inner.next() {
-            Some(x) => unsafe {
-                let r = x.as_ref();
-                Some((&r.0, &r.1))
-            },
-            None => None,
+    fn next(&mut self) -> Option<Bucket<T>> {
+        unsafe {
+            loop {
+                if let Some(index) = self.current_group.lowest_set_bit() {
+                    self.current_group = self.current_group.remove_lowest_bit();
+                    return Some(self.data.next_n(index));
+                }
+
+                if self.next_ctrl >= self.end {
+                    return None;
+                }
+
+                // We might read past self.end up to the next group boundary,
+                // but this is fine because it only occurs on tables smaller
+                // than the group size where the trailing control bytes are all
+                // EMPTY. On larger tables self.end is guaranteed to be aligned
+                // to the group size (since tables are power-of-two sized).
+                self.current_group = Group::load_aligned(self.next_ctrl).match_full();
+                self.data = self.data.next_n(Group::WIDTH);
+                self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
+            }
         }
     }
+}
+
+impl<T> FusedIterator for RawIterRange<T> {}
+
+/// Iterator which returns a raw pointer to every full bucket in the table.
+///
+/// For maximum flexibility this iterator is not bound by a lifetime, but you
+/// must observe several rules when using it:
+/// - You must not free the hash table while iterating (including via growing/shrinking).
+/// - It is fine to erase a bucket that has been yielded by the iterator.
+/// - Erasing a bucket that has not yet been yielded by the iterator may still
+///   result in the iterator yielding that bucket (unless `reflect_remove` is called).
+/// - It is unspecified whether an element inserted after the iterator was
+///   created will be yielded by that iterator (unless `reflect_insert` is called).
+/// - The order in which the iterator yields bucket is unspecified and may
+///   change in the future.
+pub struct RawIter<T> {
+    pub(crate) iter: RawIterRange<T>,
+    items: usize,
+}
+
+impl<T> RawIter<T> {
+    unsafe fn drop_elements(&mut self) {
+        if mem::needs_drop::<T>() && self.len() != 0 {
+            for item in self {
+                item.drop();
+            }
+        }
+    }
+}
+
+impl<T> Clone for RawIter<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            iter: self.iter.clone(),
+            items: self.items,
+        }
+    }
+}
+
+impl<T> Iterator for RawIter<T> {
+    type Item = Bucket<T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Bucket<T>> {
+        if let Some(b) = self.iter.next() {
+            self.items -= 1;
+            Some(b)
+        } else {
+            // We don't check against items == 0 here to allow the
+            // compiler to optimize away the item count entirely if the
+            // iterator length is never queried.
+            debug_assert_eq!(self.items, 0);
+            None
+        }
+    }
+
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
-    }
-}
-impl<K, V> ExactSizeIterator for Iter<'_, K, V> {
-    #[inline]
-    fn len(&self) -> usize {
-        self.inner.len()
+        (self.items, Some(self.items))
     }
 }
 
-impl<K, V> FusedIterator for Iter<'_, K, V> {}
-
-#[allow(dead_code)]
-fn assert_covariance() {
-    fn map_key<'new>(v: SyncInsertMap<&'static str, u8>) -> SyncInsertMap<&'new str, u8> {
-        v
-    }
-    fn map_val<'new>(v: SyncInsertMap<u8, &'static str>) -> SyncInsertMap<u8, &'new str> {
-        v
-    }
-}
-
-#[cfg(test)]
-mod test_map {
-    use super::SyncInsertMap;
-    use std::cell::RefCell;
-    use std::usize;
-    use std::vec::Vec;
-
-    #[test]
-    fn test_create_capacity_zero() {
-        let mut m = SyncInsertMap::with_capacity(0);
-
-        assert!(m.insert(1, 1).is_none());
-
-        assert!(m.contains_key(&1));
-        assert!(!m.contains_key(&0));
-    }
-
-    #[test]
-    fn test_insert() {
-        let mut m = SyncInsertMap::new();
-        assert_eq!(m.len(), 0);
-        assert!(m.insert(1, 2).is_none());
-        assert_eq!(m.len(), 1);
-        assert!(m.insert(2, 4).is_none());
-        assert_eq!(m.len(), 2);
-        assert_eq!(*m.get(&1).unwrap(), 2);
-        assert_eq!(*m.get(&2).unwrap(), 4);
-    }
-
-    thread_local! { static DROP_VECTOR: RefCell<Vec<i32>> = RefCell::new(Vec::new()) }
-
-    #[derive(Hash, PartialEq, Eq)]
-    struct Droppable {
-        k: usize,
-    }
-
-    impl Droppable {
-        fn new(k: usize) -> Droppable {
-            DROP_VECTOR.with(|slot| {
-                slot.borrow_mut()[k] += 1;
-            });
-
-            Droppable { k }
-        }
-    }
-
-    impl Drop for Droppable {
-        fn drop(&mut self) {
-            DROP_VECTOR.with(|slot| {
-                slot.borrow_mut()[self.k] -= 1;
-            });
-        }
-    }
-
-    impl Clone for Droppable {
-        fn clone(&self) -> Self {
-            Droppable::new(self.k)
-        }
-    }
-
-    #[test]
-    fn test_insert_overwrite() {
-        let mut m = SyncInsertMap::new();
-        assert!(m.insert(1, 2).is_none());
-        assert_eq!(*m.get(&1).unwrap(), 2);
-        assert!(!m.insert(1, 3).is_none());
-        assert_eq!(*m.get(&1).unwrap(), 3);
-    }
-
-    #[test]
-    fn test_insert_conflicts() {
-        let mut m = SyncInsertMap::with_capacity(4);
-        assert!(m.insert(1, 2).is_none());
-        assert!(m.insert(5, 3).is_none());
-        assert!(m.insert(9, 4).is_none());
-        assert_eq!(*m.get(&9).unwrap(), 4);
-        assert_eq!(*m.get(&5).unwrap(), 3);
-        assert_eq!(*m.get(&1).unwrap(), 2);
-    }
-
-    #[test]
-    fn test_find() {
-        let mut m = SyncInsertMap::new();
-        assert!(m.get(&1).is_none());
-        m.insert(1, 2);
-        match m.get(&1) {
-            None => panic!(),
-            Some(v) => assert_eq!(*v, 2),
-        }
-    }
-
-    #[test]
-    fn test_show() {
-        let mut map = SyncInsertMap::new();
-        let empty: SyncInsertMap<i32, i32> = SyncInsertMap::new();
-
-        map.insert(1, 2);
-        map.insert(3, 4);
-
-        let map_str = format!("{:?}", map);
-
-        assert!(map_str == "{1: 2, 3: 4}" || map_str == "{3: 4, 1: 2}");
-        assert_eq!(format!("{:?}", empty), "{}");
-    }
-
-    #[test]
-    fn test_expand() {
-        let mut m = SyncInsertMap::new();
-
-        assert_eq!(m.len(), 0);
-        assert!(m.is_empty());
-
-        let mut i = 0;
-        let old_raw_cap = m.raw_capacity();
-        while old_raw_cap == m.raw_capacity() {
-            m.insert(i, i);
-            i += 1;
-        }
-
-        assert_eq!(m.len(), i);
-        assert!(!m.is_empty());
-    }
-
-    #[test]
-    fn test_capacity_not_less_than_len() {
-        let mut a = SyncInsertMap::new();
-        let mut item = 0;
-
-        for _ in 0..116 {
-            a.insert(item, 0);
-            item += 1;
-        }
-
-        assert!(a.capacity() > a.len());
-
-        let free = a.capacity() - a.len();
-        for _ in 0..free {
-            a.insert(item, 0);
-            item += 1;
-        }
-
-        assert_eq!(a.len(), a.capacity());
-
-        // Insert at capacity should cause allocation.
-        a.insert(item, 0);
-        assert!(a.capacity() > a.len());
-    }
-}
+impl<T> ExactSizeIterator for RawIter<T> {}
+impl<T> FusedIterator for RawIter<T> {}
