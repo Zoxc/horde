@@ -1,7 +1,7 @@
 use super::bitmask::BitMask;
 use super::EMPTY;
 use core::intrinsics::atomic_load_acq;
-use core::{mem, ptr};
+use core::mem;
 
 // Use the native word size as the group size. Using a 64-bit group size on
 // a 32-bit architecture will just end up being more expensive because

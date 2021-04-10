@@ -6,25 +6,9 @@ edition = "2018"
 [lib]
 crate-type = ["rlib", "dylib"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 parking_lot = "0.11.1"
 crossbeam-utils = "0.8.0"
-ahash = { version = "0.7.0", default-features = false }
-
-[features]
-default = ["nightly", "inline-more"]
-
-nightly = []
-
-# Enables usage of `#[inline]` on far more functions than by default in this
-# crate. This may lead to a performance increase but often comes at a compile
-# time cost.
-inline-more = []
-
-[dev-dependencies]
-rand = { version = "0.7.3", features = ["small_rng"] }
 
 [profile.release]
 debug = 0

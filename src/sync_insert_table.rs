@@ -13,6 +13,7 @@ use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
     collections::hash_map::RandomState,
+    fmt,
     hash::BuildHasher,
     intrinsics::{likely, unlikely},
     iter::FusedIterator,
@@ -29,7 +30,7 @@ mod tests;
 /// This is usually just a pointer to the element itself. However if the element
 /// is a ZST, then we instead track the index of the element in the table so
 /// that `erase` works properly.
-pub struct Bucket<T> {
+struct Bucket<T> {
     // Actually it is pointer to next element than element itself
     // this is needed to maintain pointer arithmetic invariants
     // keeping direct pointer to element introduces difficulty.
@@ -70,10 +71,6 @@ impl<T> Bucket<T> {
         self.as_ptr().drop_in_place();
     }
     #[inline]
-    pub unsafe fn read(&self) -> T {
-        self.as_ptr().read()
-    }
-    #[inline]
     pub unsafe fn write(&self, val: T) {
         self.as_ptr().write(val);
     }
@@ -84,10 +81,6 @@ impl<T> Bucket<T> {
     #[inline]
     pub unsafe fn as_mut<'a>(&self) -> &'a mut T {
         &mut *self.as_ptr()
-    }
-    #[inline]
-    pub unsafe fn copy_from_nonoverlapping(&self, other: &Self) {
-        self.as_ptr().copy_from_nonoverlapping(other.as_ptr(), 1);
     }
 }
 
@@ -567,9 +560,16 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 
     #[inline]
-    pub fn iter(&self) -> RawIter<T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         let table = self.current.load();
-        unsafe { table.iter() }
+
+        // Here we tie the lifetime of self to the iter.
+        unsafe {
+            Iter {
+                inner: table.iter(),
+                marker: PhantomData,
+            }
+        }
     }
 }
 
@@ -578,7 +578,7 @@ impl<'a, T: Clone, S> Locked<'a, T, S> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
+    pub fn insert_new(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> &T {
         let mut table = self.table.current.load();
 
         unsafe {
@@ -593,7 +593,7 @@ impl<'a, T: Clone, S> Locked<'a, T, S> {
 
             table.info_mut().record_item_insert_at(index, hash);
 
-            bucket
+            bucket.as_ref()
         }
     }
 
@@ -694,6 +694,64 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> 
         }
     }
 }
+
+/// An iterator over the entries of a `HashMap`.
+///
+/// This `struct` is created by the [`iter`] method on [`HashMap`]. See its
+/// documentation for more.
+///
+/// [`iter`]: struct.HashMap.html#method.iter
+/// [`HashMap`]: struct.HashMap.html
+pub struct Iter<'a, T> {
+    inner: RawIter<T>,
+    marker: PhantomData<&'a T>,
+}
+
+// FIXME(#26925) Remove in favor of `#[derive(Clone)]`
+impl<T> Clone for Iter<'_, T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Iter {
+            inner: self.inner.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.clone()).finish()
+    }
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = &'a T;
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.inner.next() {
+            Some(x) => unsafe {
+                let r = x.as_ref();
+                Some(&r)
+            },
+            None => None,
+        }
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<T> ExactSizeIterator for Iter<'_, T> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl<T> FusedIterator for Iter<'_, T> {}
 
 /// Returns the maximum effective capacity for the given bucket mask, taking
 /// the maximum load factor into account.
@@ -801,7 +859,7 @@ impl ProbeSeq {
 /// Iterator over occupied buckets that could match a given hash.
 ///
 /// In rare cases, the iterator may return a bucket with a different hash.
-pub struct RawIterHash<'a, T> {
+struct RawIterHash<'a, T> {
     table: TableRef<T>,
     inner: RawIterHashInner<'a>,
     _marker: PhantomData<T>,
@@ -890,7 +948,7 @@ impl<'a> Iterator for RawIterHashInner<'a> {
 
 /// Iterator over a sub-range of a table. Unlike `RawIter` this iterator does
 /// not track an item count.
-pub(crate) struct RawIterRange<T> {
+struct RawIterRange<T> {
     // Mask of full buckets in the current group. Bits are cleared from this
     // mask as each element is processed.
     current_group: BitMask,
@@ -989,8 +1047,8 @@ impl<T> FusedIterator for RawIterRange<T> {}
 ///   created will be yielded by that iterator (unless `reflect_insert` is called).
 /// - The order in which the iterator yields bucket is unspecified and may
 ///   change in the future.
-pub struct RawIter<T> {
-    pub(crate) iter: RawIterRange<T>,
+struct RawIter<T> {
+    iter: RawIterRange<T>,
     items: usize,
 }
 

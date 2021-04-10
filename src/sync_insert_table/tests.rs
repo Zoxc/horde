@@ -39,6 +39,20 @@ fn test_insert() {
 }
 
 #[test]
+fn test_iter() {
+    let mut m = SyncInsertTable::new();
+    assert!(m.map_insert(1, 2).is_none());
+    assert!(m.map_insert(5, 3).is_none());
+    assert!(m.map_insert(2, 4).is_none());
+    assert!(m.map_insert(9, 4).is_none());
+
+    let mut v: Vec<(i32, i32)> = m.iter().map(|i| *i).collect();
+    v.sort_by_key(|k| k.0);
+
+    assert_eq!(v, vec![(1, 2), (2, 4), (5, 3), (9, 4)]);
+}
+
+#[test]
 fn test_insert_conflicts() {
     let mut m = SyncInsertTable::new_with(RandomState::default(), 4);
     assert!(m.map_insert(1, 2).is_none());
@@ -110,9 +124,7 @@ fn rehash() {
     }
 
     for i in 0..100 {
-        unsafe {
-            assert_eq!(table.find(i, |x| *x == i).map(|b| b.read()), Some(i));
-        }
-        assert!(table.find(i + 100, |x| *x == i + 100).is_none());
+        assert_eq!(table.get(i, |x| *x == i).map(|b| *b), Some(i));
+        assert!(table.get(i + 100, |x| *x == i + 100).is_none());
     }
 }
