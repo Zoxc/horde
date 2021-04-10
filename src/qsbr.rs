@@ -67,7 +67,7 @@ cfg_if! {
         fn hide(mut data: *mut Data) -> *mut Data {
             // Hide the `data` value from LLVM to prevent it from generating multiple TLS accesses
             unsafe {
-                asm!("/* {} */", inout(reg) data);
+                asm!("/* {} */", inout(reg) data, options(pure, nomem, nostack, preserves_flags));
             }
 
             data

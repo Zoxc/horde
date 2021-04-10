@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::SyncInsertTable;
+use crate::qsbr::pin;
 use std::collections::hash_map::RandomState;
 
 #[test]
@@ -34,8 +35,8 @@ fn test_insert() {
     assert_eq!(m.len(), 1);
     assert!(m.map_insert(2, 4).is_none());
     assert_eq!(m.len(), 2);
-    assert_eq!(*m.map_get(&1).unwrap(), 2);
-    assert_eq!(*m.map_get(&2).unwrap(), 4);
+    assert_eq!(m.map_get(&1).unwrap(), 2);
+    assert_eq!(m.map_get(&2).unwrap(), 4);
 }
 
 #[test]
@@ -46,10 +47,12 @@ fn test_iter() {
     assert!(m.map_insert(2, 4).is_none());
     assert!(m.map_insert(9, 4).is_none());
 
-    let mut v: Vec<(i32, i32)> = m.iter().map(|i| *i).collect();
-    v.sort_by_key(|k| k.0);
+    pin(|pin| {
+        let mut v: Vec<(i32, i32)> = m.read(pin).iter().map(|i| *i).collect();
+        v.sort_by_key(|k| k.0);
 
-    assert_eq!(v, vec![(1, 2), (2, 4), (5, 3), (9, 4)]);
+        assert_eq!(v, vec![(1, 2), (2, 4), (5, 3), (9, 4)]);
+    });
 }
 
 #[test]
@@ -58,9 +61,9 @@ fn test_insert_conflicts() {
     assert!(m.map_insert(1, 2).is_none());
     assert!(m.map_insert(5, 3).is_none());
     assert!(m.map_insert(9, 4).is_none());
-    assert_eq!(*m.map_get(&9).unwrap(), 4);
-    assert_eq!(*m.map_get(&5).unwrap(), 3);
-    assert_eq!(*m.map_get(&1).unwrap(), 2);
+    assert_eq!(m.map_get(&9).unwrap(), 4);
+    assert_eq!(m.map_get(&5).unwrap(), 3);
+    assert_eq!(m.map_get(&1).unwrap(), 2);
 }
 
 #[test]
@@ -86,7 +89,7 @@ fn test_find() {
     m.map_insert(1, 2);
     match m.map_get(&1) {
         None => panic!(),
-        Some(v) => assert_eq!(*v, 2),
+        Some(v) => assert_eq!(v, 2),
     }
 }
 
@@ -100,19 +103,21 @@ fn test_capacity_not_less_than_len() {
         item += 1;
     }
 
-    assert!(a.capacity() > a.len());
+    pin(|pin| {
+        assert!(a.read(pin).capacity() > a.len());
 
-    let free = a.capacity() - a.len();
-    for _ in 0..free {
+        let free = a.read(pin).capacity() - a.len();
+        for _ in 0..free {
+            a.map_insert(item, 0);
+            item += 1;
+        }
+
+        assert_eq!(a.len(), a.read(pin).capacity());
+
+        // Insert at capacity should cause allocation.
         a.map_insert(item, 0);
-        item += 1;
-    }
-
-    assert_eq!(a.len(), a.capacity());
-
-    // Insert at capacity should cause allocation.
-    a.map_insert(item, 0);
-    assert!(a.capacity() > a.len());
+        assert!(a.read(pin).capacity() > a.len());
+    })
 }
 
 #[test]
@@ -123,8 +128,10 @@ fn rehash() {
         table.lock().insert_new(i, i, hasher);
     }
 
-    for i in 0..100 {
-        assert_eq!(table.get(i, |x| *x == i).map(|b| *b), Some(i));
-        assert!(table.get(i + 100, |x| *x == i + 100).is_none());
-    }
+    pin(|pin| {
+        for i in 0..100 {
+            assert_eq!(table.read(pin).get(i, |x| *x == i).map(|b| *b), Some(i));
+            assert!(table.read(pin).get(i + 100, |x| *x == i + 100).is_none());
+        }
+    })
 }

@@ -28,6 +28,11 @@ fn alloc_test(bucket_count: usize) -> TableRef<usize> {
 }
 
 #[no_mangle]
+fn len_test(table: &SyncInsertTable<u64>) {
+    table.len();
+}
+
+#[no_mangle]
 fn find_test(table: &SyncInsertTable<usize>) -> Option<usize> {
     unsafe { table.find(5, |a| *a == 5).map(|b| *b.as_ref()) }
 }

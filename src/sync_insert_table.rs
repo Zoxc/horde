@@ -1,4 +1,5 @@
 use crate::{
+    qsbr::{pin, Pin},
     raw::{
         bitmask::{BitMask, BitMaskIter},
         imp::Group,
@@ -84,9 +85,17 @@ impl<T> Bucket<T> {
     }
 }
 
-pub struct Locked<'a, T, S> {
+/// A reference to the table which can read from it. It is acquired either by a pin,
+/// or by exclusive access to the table.
+pub struct Read<'a, T, S> {
     table: &'a SyncInsertTable<T, S>,
-    _guard: MutexGuard<'a, ()>,
+}
+
+/// A reference to the table which can write to it. It is acquired either by a lock,
+/// or by exclusive access to the table.
+pub struct Write<'a, T, S> {
+    table: &'a SyncInsertTable<T, S>,
+    _guard: Option<MutexGuard<'a, ()>>,
 }
 
 /// A raw hash table with an unsafe API.
@@ -486,22 +495,70 @@ impl<T, S> SyncInsertTable<T, S> {
         unsafe { self.current.load().find(hash, eq) }
     }
 
-    /// Gets a reference to an element in the table.
-    #[inline]
-    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hash, eq) {
-            Some(bucket) => Some(unsafe { bucket.as_ref() }),
-            None => None,
-        }
-    }
-
     /// Gets a mutable reference to an element in the table.
     #[inline]
     pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.find(hash, eq) {
             Some(bucket) => Some(unsafe { bucket.as_mut() }),
+            None => None,
+        }
+    }
+
+    #[inline]
+    pub fn mutex(&self) -> &Mutex<()> {
+        &self.lock
+    }
+
+    #[inline]
+    pub fn read<'a>(&'a self, _pin: &'a Pin) -> Read<'a, T, S> {
+        Read { table: self }
+    }
+
+    #[inline]
+    pub fn write(&mut self) -> Write<'_, T, S> {
+        Write {
+            table: self,
+            _guard: None,
+        }
+    }
+
+    /// Returns the number of elements in the table.
+    #[inline]
+    pub fn len(&self) -> usize {
+        pin(|pin| self.read(pin).len())
+    }
+
+    #[inline]
+    pub fn lock(&self) -> Write<'_, T, S> {
+        Write {
+            table: self,
+            _guard: Some(self.lock.lock()),
+        }
+    }
+
+    #[inline]
+    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> Write<'a, T, S> {
+        // Verify that we are target of the guard
+        assert_eq!(
+            &self.lock as *const _,
+            MutexGuard::mutex(&guard) as *const _
+        );
+
+        Write {
+            table: self,
+            _guard: Some(guard),
+        }
+    }
+}
+
+impl<'a, T, S> Read<'a, T, S> {
+    /// Gets a reference to an element in the table.
+    #[inline]
+    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.table.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_ref() }),
             None => None,
         }
     }
@@ -513,7 +570,7 @@ impl<T, S> SyncInsertTable<T, S> {
     #[inline]
     pub fn capacity(&self) -> usize {
         unsafe {
-            let table = self.current.load();
+            let table = self.table.current.load();
             let info = table.info();
             info.items + info.growth_left
         }
@@ -522,46 +579,18 @@ impl<T, S> SyncInsertTable<T, S> {
     /// Returns the number of elements in the table.
     #[inline]
     pub fn len(&self) -> usize {
-        unsafe { self.current.load().info().items }
+        unsafe { self.table.current.load().info().items }
     }
 
     /// Returns the number of buckets in the table.
     #[inline]
     pub fn buckets(&self) -> usize {
-        // FIXME: Needs to hold QSBR token to be safe
-        unsafe { self.current.load().info().buckets() }
-    }
-
-    #[inline]
-    pub fn mutex(&self) -> &Mutex<()> {
-        &self.lock
-    }
-
-    #[inline]
-    pub fn lock(&self) -> Locked<'_, T, S> {
-        Locked {
-            table: self,
-            _guard: self.lock.lock(),
-        }
-    }
-
-    #[inline]
-    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> Locked<'a, T, S> {
-        // Verify that we are target of the guard
-        assert_eq!(
-            &self.lock as *const _,
-            MutexGuard::mutex(&guard) as *const _
-        );
-
-        Locked {
-            table: self,
-            _guard: guard,
-        }
+        unsafe { self.table.current.load().info().buckets() }
     }
 
     #[inline]
     pub fn iter(&self) -> Iter<'_, T> {
-        let table = self.current.load();
+        let table = self.table.current.load();
 
         // Here we tie the lifetime of self to the iter.
         unsafe {
@@ -573,7 +602,14 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 }
 
-impl<'a, T: Clone, S> Locked<'a, T, S> {
+impl<'a, T, S> Write<'a, T, S> {
+    #[inline]
+    pub fn read(&self) -> Read<'_, T, S> {
+        Read { table: self.table }
+    }
+}
+
+impl<'a, T: Clone, S> Write<'a, T, S> {
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
@@ -667,12 +703,23 @@ impl<'a, T: Clone, S> Locked<'a, T, S> {
 
 impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
     #[inline]
-    pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let hash = make_hash::<K, Q, S>(&self.hash_builder, k);
+        pin(|pin| self.read(pin).map_get(k).cloned())
+    }
+}
+
+impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
+    #[inline]
+    pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<&'a V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let hash = make_hash::<K, Q, S>(&self.table.hash_builder, k);
         // Avoid `Option::map` because it bloats LLVM IR.
 
         match self.get(hash, equivalent_key(k)) {
@@ -680,7 +727,9 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> 
             None => None,
         }
     }
+}
 
+impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
     #[inline]
     pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
         let hash = make_insert_hash(&self.hash_builder, &k);

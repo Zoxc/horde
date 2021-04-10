@@ -13,3 +13,5 @@ crossbeam-utils = "0.8.0"
 
 [profile.release]
 debug = 0
+#codegen-units = 1
+#lto = "fat"

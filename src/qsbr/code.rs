@@ -4,12 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::Pin;
 
-static DUMMY: AtomicBool = AtomicBool::new(false);
-
 #[inline(never)]
 #[no_mangle]
 unsafe fn dummy() {
-    if DUMMY.load(Ordering::Acquire) {
+    if *(5345 as *const bool) {
         panic!("whoops")
     }
 }
