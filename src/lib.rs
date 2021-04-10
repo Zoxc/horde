@@ -10,7 +10,8 @@
     allocator_api,
     slice_ptr_get,
     nonnull_slice_from_raw_parts,
-    maybe_uninit_array_assume_init
+    maybe_uninit_array_assume_init,
+    thread_local
 )]
 
 extern crate alloc;
@@ -18,6 +19,7 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
+pub mod qsbr;
 mod raw;
 mod scopeguard;
 mod util;
