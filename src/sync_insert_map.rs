@@ -598,9 +598,9 @@ impl<T: Clone> SyncInsertMap<T> {
             None => panic!("capacity overflow"),
         };
 
-        let buckets = unsafe { (table.info().bucket_mask + 1) << 2 };
+        let full_capacity = bucket_mask_to_capacity(unsafe { table.info().bucket_mask });
 
-        let table = self.resize(buckets, hasher);
+        let table = self.resize(usize::max(new_items, full_capacity + 1), hasher);
 
         self.current.store(table);
         table
@@ -608,11 +608,12 @@ impl<T: Clone> SyncInsertMap<T> {
 
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn resize(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+    fn resize(&self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
         let table = self.current.load();
         unsafe {
-            debug_assert!(table.info().items <= bucket_mask_to_capacity(buckets - 1));
+            debug_assert!(table.info().items <= capacity);
         }
+        let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
 
         unsafe {
             let mut new_table = TableRef::allocate(buckets);
