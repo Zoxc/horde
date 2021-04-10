@@ -21,6 +21,7 @@ mod macros;
 
 pub mod raw;
 mod scopeguard;
+mod util;
 
 pub mod map;
 pub mod sync_insert_table;

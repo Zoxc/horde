@@ -11,6 +11,7 @@ use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
+    collections::hash_map::RandomState,
     intrinsics::{likely, unlikely},
     iter::FusedIterator,
     marker::PhantomData,
@@ -19,7 +20,7 @@ use std::{
 };
 
 mod code;
-mod test;
+mod tests;
 
 /// A reference to a hash table bucket containing a `T`.
 ///
@@ -89,7 +90,9 @@ impl<T> Bucket<T> {
 }
 
 /// A raw hash table with an unsafe API.
-pub struct SyncInsertTable<T> {
+pub struct SyncInsertTable<T, S = RandomState> {
+    hash_builder: S,
+
     current: AtomicCell<TableRef<T>>,
 
     lock: Mutex<()>,
@@ -421,7 +424,7 @@ impl<T> TableRef<T> {
     }
 }
 
-unsafe impl<#[may_dangle] T> Drop for SyncInsertTable<T> {
+unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -433,26 +436,33 @@ unsafe impl<#[may_dangle] T> Drop for SyncInsertTable<T> {
     }
 }
 
-unsafe impl<T: Send> Send for SyncInsertTable<T> {}
-unsafe impl<T: Send> Sync for SyncInsertTable<T> {}
+unsafe impl<T: Send, S> Send for SyncInsertTable<T, S> {}
+unsafe impl<T: Send, S> Sync for SyncInsertTable<T, S> {}
 
-impl<T> SyncInsertTable<T> {
+impl<T, S: Default> Default for SyncInsertTable<T, S> {
+    fn default() -> Self {
+        Self::new_with(Default::default(), 0)
+    }
+}
+
+impl<T, S> SyncInsertTable<T, S> {
     #[inline]
-    pub fn new() -> Self {
-        Self {
-            current: AtomicCell::new(TableRef::empty()),
-            old: UnsafeCell::new(Vec::new()),
-            marker: PhantomData,
-            lock: Mutex::new(()),
-        }
+    pub fn new() -> Self
+    where
+        S: Default,
+    {
+        Self::default()
     }
 
     #[inline]
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn new_with(hash_builder: S, capacity: usize) -> Self {
         Self {
-            current: AtomicCell::new(TableRef::allocate(
-                capacity_to_buckets(capacity).expect("capacity overflow"),
-            )),
+            hash_builder,
+            current: AtomicCell::new(if capacity > 0 {
+                TableRef::allocate(capacity_to_buckets(capacity).expect("capacity overflow"))
+            } else {
+                TableRef::empty()
+            }),
             old: UnsafeCell::new(Vec::new()),
             marker: PhantomData,
             lock: Mutex::new(()),
@@ -532,7 +542,7 @@ impl<T> SyncInsertTable<T> {
     }
 }
 
-impl<T: Clone> SyncInsertTable<T> {
+impl<T: Clone, S> SyncInsertTable<T, S> {
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
