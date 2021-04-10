@@ -532,6 +532,14 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 
     #[inline]
+    pub unsafe fn unsafe_write(&self) -> Write<'_, T, S> {
+        Write {
+            table: self,
+            _guard: None,
+        }
+    }
+
+    #[inline]
     pub fn write(&mut self) -> Write<'_, T, S> {
         Write {
             table: self,
