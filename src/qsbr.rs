@@ -1,6 +1,10 @@
-use crate::scopeguard::guard;
+use crate::{scopeguard::guard, util::cold_path};
 use crossbeam_epoch::Guard;
-use std::{cell::UnsafeCell, intrinsics::unlikely};
+use std::{
+    cell::UnsafeCell,
+    intrinsics::unlikely,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 mod code;
 
@@ -28,23 +32,30 @@ impl Init {
     }
 }
 
+static DEFERRED: AtomicU64 = AtomicU64::new(0);
+
 pub struct Pin {
     _private: (),
 }
 
 impl Pin {
-    // FIXME: Is it sound to get the pin on demand?
-    // Some other thread than ourselves could allocate data that we'd read?
-    pub fn guard(&self) -> &Guard {
-        let data = hide(data());
+    fn guard(&self) -> &Guard {
+        let data = data();
 
-        unsafe {
-            if unlikely((*data).guard.is_none()) {
-                (*data).get_guard();
-            }
+        unsafe { (*data).guard.as_ref().unwrap() }
+    }
 
-            (*data).guard.as_ref().unwrap_unchecked()
-        }
+    pub unsafe fn defer_unchecked<F, R>(&self, f: F)
+    where
+        F: FnOnce() -> R,
+    {
+        DEFERRED
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |current| {
+                Some(current.checked_add(1).unwrap())
+            })
+            .ok();
+
+        self.guard().defer_unchecked(f)
     }
 }
 
@@ -52,11 +63,13 @@ impl Pin {
 static DATA: UnsafeCell<Data> = UnsafeCell::new(Data {
     pinned: false,
     guard: None,
+    seen_deferred: 0,
 });
 
 struct Data {
     pinned: bool,
     guard: Option<Guard>,
+    seen_deferred: u64,
 }
 
 #[inline(never)]
@@ -141,6 +154,12 @@ pub fn release() {
 pub fn collect() {
     let data = unsafe { &mut *(hide(data())) };
     data.assert_unpinned();
-    data.guard = None;
-    data.guard = Some(crossbeam_epoch::pin());
+    let new = DEFERRED.load(Ordering::Acquire);
+    if unlikely(new != data.seen_deferred) {
+        data.seen_deferred = new;
+        cold_path(|| {
+            data.guard = None;
+            data.guard = Some(crossbeam_epoch::pin());
+        });
+    }
 }

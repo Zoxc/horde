@@ -684,7 +684,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
             unsafe {
                 (*self.table.old.get()).push(destroy.clone());
 
-                pin.guard().defer_unchecked(move || destroy.run());
+                pin.defer_unchecked(move || destroy.run());
             }
         });
 
