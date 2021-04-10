@@ -89,7 +89,7 @@ impl<T> Bucket<T> {
 }
 
 /// A raw hash table with an unsafe API.
-pub struct SyncInsertMap<T> {
+pub struct SyncInsertTable<T> {
     current: AtomicCell<TableRef<T>>,
 
     lock: Mutex<()>,
@@ -397,7 +397,7 @@ impl<T> TableRef<T> {
     ///
     /// In rare cases, the iterator may return a bucket with a different hash.
     ///
-    /// It is up to the caller to ensure that the `SyncInsertMap` outlives the
+    /// It is up to the caller to ensure that the `SyncInsertTable` outlives the
     /// `RawIterHash`. Because we cannot make the `next` method unsafe on the
     /// `RawIterHash` struct, we have to make the `iter_hash` method unsafe.
     #[inline]
@@ -406,7 +406,7 @@ impl<T> TableRef<T> {
     }
 
     /// Returns an iterator over every element in the table. It is up to
-    /// the caller to ensure that the `SyncInsertMap` outlives the `RawIter`.
+    /// the caller to ensure that the `SyncInsertTable` outlives the `RawIter`.
     /// Because we cannot make the `next` method unsafe on the `RawIter`
     /// struct, we have to make the `iter` method unsafe.
     #[inline]
@@ -421,7 +421,7 @@ impl<T> TableRef<T> {
     }
 }
 
-unsafe impl<#[may_dangle] T> Drop for SyncInsertMap<T> {
+unsafe impl<#[may_dangle] T> Drop for SyncInsertTable<T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -433,10 +433,10 @@ unsafe impl<#[may_dangle] T> Drop for SyncInsertMap<T> {
     }
 }
 
-unsafe impl<T: Send> Send for SyncInsertMap<T> {}
-unsafe impl<T: Send> Sync for SyncInsertMap<T> {}
+unsafe impl<T: Send> Send for SyncInsertTable<T> {}
+unsafe impl<T: Send> Sync for SyncInsertTable<T> {}
 
-impl<T> SyncInsertMap<T> {
+impl<T> SyncInsertTable<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -532,7 +532,7 @@ impl<T> SyncInsertMap<T> {
     }
 }
 
-impl<T: Clone> SyncInsertMap<T> {
+impl<T: Clone> SyncInsertTable<T> {
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.

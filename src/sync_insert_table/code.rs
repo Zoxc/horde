@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{SyncInsertMap, TableRef};
+use super::{SyncInsertTable, TableRef};
 
 #[no_mangle]
 unsafe fn bucket_index(t: TableRef<usize>, i: usize) -> *mut usize {
@@ -28,12 +28,12 @@ fn alloc_test(bucket_count: usize) -> TableRef<usize> {
 }
 
 #[no_mangle]
-fn find_test(table: &SyncInsertMap<usize>) -> Option<usize> {
+fn find_test(table: &SyncInsertTable<usize>) -> Option<usize> {
     unsafe { table.find(5, |a| *a == 5).map(|b| *b.as_ref()) }
 }
 
 #[no_mangle]
-fn insert_test(table: &mut SyncInsertMap<u64>) {
+fn insert_test(table: &mut SyncInsertTable<u64>) {
     table.insert(5, 5, |a| *a);
 }
 

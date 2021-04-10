@@ -23,7 +23,7 @@ pub mod raw;
 mod scopeguard;
 
 pub mod map;
-pub mod sync_insert_map;
+pub mod sync_insert_table;
 
 struct OnDrop<F: Fn()>(pub F);
 

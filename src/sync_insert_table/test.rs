@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::SyncInsertMap;
+use super::SyncInsertTable;
 
 #[test]
 fn high_align() {
@@ -8,7 +8,7 @@ fn high_align() {
     #[derive(Clone, PartialEq)]
     struct A(u64);
 
-    let table = SyncInsertMap::new();
+    let table = SyncInsertTable::new();
 
     table.find(1, |a| a == &A(1));
 
@@ -17,7 +17,7 @@ fn high_align() {
 
 #[test]
 fn rehash() {
-    let table = SyncInsertMap::new();
+    let table = SyncInsertTable::new();
     let hasher = |i: &u64| *i;
     for i in 0..100 {
         table.insert(i, i, hasher);
