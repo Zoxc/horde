@@ -605,7 +605,7 @@ impl<'a, T, S> Read<'a, T, S> {
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<'_, T> {
+    pub fn iter(&self) -> Iter<'a, T> {
         let table = self.table.current.load();
 
         // Here we tie the lifetime of self to the iter.
