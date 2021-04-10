@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::atomic::RawTable;
+use super::RawTable;
 
 #[test]
 fn high_align() {

@@ -19,11 +19,11 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
-pub mod atomic;
 pub mod raw;
 mod scopeguard;
 
 pub mod map;
+pub mod sync_insert_map;
 
 struct OnDrop<F: Fn()>(pub F);
 

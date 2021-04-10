@@ -409,7 +409,7 @@ impl<T> TableRef<T> {
     /// the caller to ensure that the `RawTable` outlives the `RawIter`.
     /// Because we cannot make the `next` method unsafe on the `RawIter`
     /// struct, we have to make the `iter` method unsafe.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     pub unsafe fn iter(&self) -> RawIter<T> {
         let data = Bucket {
             ptr: NonNull::new_unchecked(self.bucket_past_last()),
@@ -447,6 +447,18 @@ impl<T> RawTable<T> {
         }
     }
 
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            current: AtomicCell::new(TableRef::allocate(
+                capacity_to_buckets(capacity).expect("capacity overflow"),
+            )),
+            old: UnsafeCell::new(Vec::new()),
+            marker: PhantomData,
+            lock: Mutex::new(()),
+        }
+    }
+
     /// Searches for an element in the table.
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
@@ -460,6 +472,49 @@ impl<T> RawTable<T> {
             }
             None
         }
+    }
+
+    /// Gets a reference to an element in the table.
+    #[inline]
+    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_ref() }),
+            None => None,
+        }
+    }
+
+    /// Gets a mutable reference to an element in the table.
+    #[inline]
+    pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_mut() }),
+            None => None,
+        }
+    }
+
+    /// Returns the number of elements the map can hold without reallocating.
+    ///
+    /// This number is a lower bound; the table might be able to hold
+    /// more, but is guaranteed to be able to hold at least this many.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        let info = unsafe { self.current.load().info() };
+        info.items + info.growth_left
+    }
+
+    /// Returns the number of elements in the table.
+    #[inline]
+    pub fn len(&self) -> usize {
+        unsafe { self.current.load().info().items }
+    }
+
+    /// Returns the number of buckets in the table.
+    #[inline]
+    pub fn buckets(&self) -> usize {
+        // FIXME: Needs to hold QSBR token to be safe
+        unsafe { self.current.load().info().buckets() }
     }
 
     #[inline]
@@ -493,7 +548,7 @@ impl<T: Clone> RawTable<T> {
 
         unsafe {
             if unlikely(table.info().growth_left == 0) {
-                table = self.reserve(1, &hasher);
+                table = self.locked_reserve(1, &hasher);
             }
 
             let index = table.info().find_insert_slot(hash);
@@ -515,10 +570,23 @@ impl<T: Clone> RawTable<T> {
         self.insert_with_guard(hash, value, hasher, &mut self.lock.lock())
     }
 
+    #[inline]
+    pub fn reserve_with_guard(
+        &self,
+        additional: usize,
+        hasher: impl Fn(&T) -> u64,
+        guard: &mut MutexGuard<'_, ()>,
+    ) {
+        // Verify that we are locked
+        assert_eq!(&self.lock as *const _, MutexGuard::mutex(guard) as *const _);
+
+        self.locked_reserve(additional, &hasher);
+    }
+
     /// Out-of-line slow path for `reserve` and `try_reserve`.
     #[cold]
     #[inline(never)]
-    fn reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
+    fn locked_reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
         let table = self.current.load();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
@@ -792,7 +860,7 @@ impl<T> RawIterRange<T> {
     /// Returns a `RawIterRange` covering a subset of a table.
     ///
     /// The control byte address must be aligned to the group size.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
         debug_assert_ne!(len, 0);
         debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
@@ -817,7 +885,7 @@ unsafe impl<T> Send for RawIterRange<T> {}
 unsafe impl<T> Sync for RawIterRange<T> {}
 
 impl<T> Clone for RawIterRange<T> {
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn clone(&self) -> Self {
         Self {
             data: self.data.clone(),
@@ -831,7 +899,7 @@ impl<T> Clone for RawIterRange<T> {
 impl<T> Iterator for RawIterRange<T> {
     type Item = Bucket<T>;
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             loop {
@@ -887,7 +955,7 @@ impl<T> RawIter<T> {
 }
 
 impl<T> Clone for RawIter<T> {
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn clone(&self) -> Self {
         Self {
             iter: self.iter.clone(),
@@ -899,7 +967,7 @@ impl<T> Clone for RawIter<T> {
 impl<T> Iterator for RawIter<T> {
     type Item = Bucket<T>;
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn next(&mut self) -> Option<Bucket<T>> {
         if let Some(b) = self.iter.next() {
             self.items -= 1;
@@ -913,7 +981,7 @@ impl<T> Iterator for RawIter<T> {
         }
     }
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.items, Some(self.items))
     }
