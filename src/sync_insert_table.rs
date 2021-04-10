@@ -834,7 +834,7 @@ impl<T> FusedIterator for Iter<'_, T> {}
 /// the maximum load factor into account.
 #[inline]
 fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
-    if bucket_mask < 16 {
+    if bucket_mask < 8 {
         // For tables with 1/2/4/8 buckets, we always reserve one empty slot.
         // Keep in mind that the bucket mask is one less than the bucket count.
         bucket_mask
@@ -856,11 +856,11 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
 
     // For small tables we require at least 1 empty bucket so that lookups are
     // guaranteed to terminate if an element doesn't exist in the table.
-    if cap < 16 {
+    if cap < 8 {
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
-        return Some(if cap < 4 { 4 } else { 16 });
+        return Some(if cap < 4 { 4 } else { 8 });
     }
 
     // Otherwise require 1/8 buckets to be empty (87.5% load)
