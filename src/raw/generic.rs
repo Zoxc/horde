@@ -64,23 +64,6 @@ impl Group {
         unsafe { mem::transmute(ALIGNED_BYTES) }
     };
 
-    /// Returns a full group of empty bytes, suitable for use as the initial
-    /// value for an empty hash table.
-    ///
-    /// This is guaranteed to be aligned to the group size.
-    pub const fn static_empty() -> &'static [u8; Group::WIDTH] {
-        #[repr(C)]
-        struct AlignedBytes {
-            _align: [Group; 0],
-            bytes: [u8; Group::WIDTH],
-        }
-        const ALIGNED_BYTES: AlignedBytes = AlignedBytes {
-            _align: [],
-            bytes: [EMPTY; Group::WIDTH],
-        };
-        &ALIGNED_BYTES.bytes
-    }
-
     /// Loads a group of bytes starting at the given address.
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
@@ -100,16 +83,6 @@ impl Group {
         // FIXME: use align_offset once it stabilizes
         debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
         Group::load(ptr)
-    }
-
-    /// Stores the group of bytes to the given address, which must be
-    /// aligned to `mem::align_of::<Group>()`.
-    #[inline]
-    #[allow(clippy::cast_ptr_alignment)]
-    pub unsafe fn store_aligned(self, ptr: *mut u8) {
-        // FIXME: use align_offset once it stabilizes
-        debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
-        ptr::write(ptr.cast(), self.0);
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which *may*
@@ -152,22 +125,5 @@ impl Group {
     #[inline]
     pub fn match_full(self) -> BitMask {
         self.match_empty_or_deleted().invert()
-    }
-
-    /// Performs the following transformation on all bytes in the group:
-    /// - `EMPTY => EMPTY`
-    /// - `DELETED => EMPTY`
-    /// - `FULL => DELETED`
-    #[inline]
-    pub fn convert_special_to_empty_and_full_to_deleted(self) -> Self {
-        // Map high_bit = 1 (EMPTY or DELETED) to 1111_1111
-        // and high_bit = 0 (FULL) to 1000_0000
-        //
-        // Here's this logic expanded to concrete values:
-        //   let full = 1000_0000 (true) or 0000_0000 (false)
-        //   !1000_0000 + 1 = 0111_1111 + 1 = 1000_0000 (no carry)
-        //   !0000_0000 + 0 = 1111_1111 + 0 = 1111_1111 (no carry)
-        let full = !self.0 & repeat(0x80);
-        Group(!full + (full >> 7))
     }
 }

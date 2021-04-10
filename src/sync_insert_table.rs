@@ -3,8 +3,8 @@ use crate::{
         bitmask::{BitMask, BitMaskIter},
         imp::Group,
     },
+    scopeguard::guard,
     util::{equivalent_key, make_hash, make_hasher, make_insert_hash},
-    OnDrop,
 };
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
@@ -635,7 +635,9 @@ impl<'a, T: Clone, S> Locked<'a, T, S> {
             new_table.info_mut().items = table.info().items;
             new_table.info_mut().growth_left -= table.info().items;
 
-            let guard = OnDrop(|| new_table.free());
+            let mut guard = guard(Some(new_table), |new_table| {
+                new_table.map(|new_table| new_table.free());
+            });
 
             // Copy all elements to the new table.
             for item in table.iter() {
@@ -654,7 +656,7 @@ impl<'a, T: Clone, S> Locked<'a, T, S> {
                 new_table.bucket(index).write(item.as_ref().clone());
             }
 
-            guard.disable();
+            *guard = None;
 
             (*self.table.old.get()).push(table);
 

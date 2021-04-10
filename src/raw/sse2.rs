@@ -41,24 +41,6 @@ impl Group {
         unsafe { mem::transmute(ALIGNED_BYTES) }
     };
 
-    /// Returns a full group of empty bytes, suitable for use as the initial
-    /// value for an empty hash table.
-    ///
-    /// This is guaranteed to be aligned to the group size.
-    #[allow(clippy::items_after_statements)]
-    pub const fn static_empty() -> &'static [u8; Group::WIDTH] {
-        #[repr(C)]
-        struct AlignedBytes {
-            _align: [Group; 0],
-            bytes: [u8; Group::WIDTH],
-        }
-        const ALIGNED_BYTES: AlignedBytes = AlignedBytes {
-            _align: [],
-            bytes: [EMPTY; Group::WIDTH],
-        };
-        &ALIGNED_BYTES.bytes
-    }
-
     /// Loads a group of bytes starting at the given address.
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
@@ -89,16 +71,6 @@ impl Group {
             options(pure, readonly, nostack, preserves_flags)
         );
         Group(result)
-    }
-
-    /// Stores the group of bytes to the given address, which must be
-    /// aligned to `mem::align_of::<Group>()`.
-    #[inline]
-    #[allow(clippy::cast_ptr_alignment)]
-    pub unsafe fn store_aligned(self, ptr: *mut u8) {
-        // FIXME: use align_offset once it stabilizes
-        debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
-        x86::_mm_store_si128(ptr.cast(), self.0);
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which have
@@ -147,31 +119,5 @@ impl Group {
     #[inline]
     pub fn match_full(&self) -> BitMask {
         self.match_empty_or_deleted().invert()
-    }
-
-    /// Performs the following transformation on all bytes in the group:
-    /// - `EMPTY => EMPTY`
-    /// - `DELETED => EMPTY`
-    /// - `FULL => DELETED`
-    #[inline]
-    pub fn convert_special_to_empty_and_full_to_deleted(self) -> Self {
-        // Map high_bit = 1 (EMPTY or DELETED) to 1111_1111
-        // and high_bit = 0 (FULL) to 1000_0000
-        //
-        // Here's this logic expanded to concrete values:
-        //   let special = 0 > byte = 1111_1111 (true) or 0000_0000 (false)
-        //   1111_1111 | 1000_0000 = 1111_1111
-        //   0000_0000 | 1000_0000 = 1000_0000
-        #[allow(
-            clippy::cast_possible_wrap, // byte: 0x80_u8 as i8
-        )]
-        unsafe {
-            let zero = x86::_mm_setzero_si128();
-            let special = x86::_mm_cmpgt_epi8(zero, self.0);
-            Group(x86::_mm_or_si128(
-                special,
-                x86::_mm_set1_epi8(0x80_u8 as i8),
-            ))
-        }
     }
 }
