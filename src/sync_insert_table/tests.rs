@@ -12,16 +12,16 @@ fn high_align() {
 
     table.find(1, |a| a == &A(1));
 
-    table.insert(1, A(1), |a| a.0);
+    table.lock().insert_new(1, A(1), |a| a.0);
 }
 
 #[test]
 fn test_capacity_not_less_than_len() {
-    let mut a = SyncInsertTable::new();
+    let mut a: SyncInsertTable<(i32, i32)> = SyncInsertTable::new();
     let mut item = 0;
 
     for _ in 0..116 {
-        a.insert(item, 0);
+        a.map_insert(item, 0);
         item += 1;
     }
 
@@ -29,14 +29,14 @@ fn test_capacity_not_less_than_len() {
 
     let free = a.capacity() - a.len();
     for _ in 0..free {
-        a.insert(item, 0);
+        a.map_insert(item, 0);
         item += 1;
     }
 
     assert_eq!(a.len(), a.capacity());
 
     // Insert at capacity should cause allocation.
-    a.insert(item, 0);
+    a.map_insert(item, 0);
     assert!(a.capacity() > a.len());
 }
 
@@ -45,7 +45,7 @@ fn rehash() {
     let table = SyncInsertTable::new();
     let hasher = |i: &u64| *i;
     for i in 0..100 {
-        table.insert(i, i, hasher);
+        table.lock().insert_new(i, i, hasher);
     }
 
     for i in 0..100 {

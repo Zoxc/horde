@@ -33,8 +33,8 @@ fn find_test(table: &SyncInsertTable<usize>) -> Option<usize> {
 }
 
 #[no_mangle]
-fn insert_test(table: &mut SyncInsertTable<u64>) {
-    table.insert(5, 5, |a| *a);
+fn insert_test(table: &SyncInsertTable<u64>) {
+    table.lock().insert_new(5, 5, |a| *a);
 }
 
 #[no_mangle]

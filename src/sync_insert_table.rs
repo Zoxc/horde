@@ -3,22 +3,24 @@ use crate::{
         bitmask::{BitMask, BitMaskIter},
         imp::Group,
     },
+    util::{equivalent_key, make_hasher, make_insert_hash},
     OnDrop,
 };
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
+use std::hash::Hash;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
     collections::hash_map::RandomState,
+    hash::BuildHasher,
     intrinsics::{likely, unlikely},
     iter::FusedIterator,
     marker::PhantomData,
     mem,
     sync::atomic::{AtomicU8, Ordering},
 };
-
 mod code;
 mod tests;
 
@@ -87,6 +89,11 @@ impl<T> Bucket<T> {
     pub unsafe fn copy_from_nonoverlapping(&self, other: &Self) {
         self.as_ptr().copy_from_nonoverlapping(other.as_ptr(), 1);
     }
+}
+
+pub struct Locked<'a, T, S> {
+    table: &'a SyncInsertTable<T, S>,
+    _guard: MutexGuard<'a, ()>,
 }
 
 /// A raw hash table with an unsafe API.
@@ -422,6 +429,18 @@ impl<T> TableRef<T> {
             items: self.info().items,
         }
     }
+
+    /// Searches for an element in the table.
+    #[inline]
+    unsafe fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+        for bucket in self.iter_hash(hash) {
+            let elm = bucket.as_ref();
+            if likely(eq(elm)) {
+                return Some(bucket);
+            }
+        }
+        None
+    }
 }
 
 unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
@@ -445,15 +464,14 @@ impl<T, S: Default> Default for SyncInsertTable<T, S> {
     }
 }
 
-impl<T, S> SyncInsertTable<T, S> {
+impl<T> SyncInsertTable<T, RandomState> {
     #[inline]
-    pub fn new() -> Self
-    where
-        S: Default,
-    {
+    pub fn new() -> Self {
         Self::default()
     }
+}
 
+impl<T, S> SyncInsertTable<T, S> {
     #[inline]
     pub fn new_with(hash_builder: S, capacity: usize) -> Self {
         Self {
@@ -471,17 +489,8 @@ impl<T, S> SyncInsertTable<T, S> {
 
     /// Searches for an element in the table.
     #[inline]
-    pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
-        let table = self.current.load();
-        unsafe {
-            for bucket in table.iter_hash(hash) {
-                let elm = bucket.as_ref();
-                if likely(eq(elm)) {
-                    return Some(bucket);
-                }
-            }
-            None
-        }
+    pub fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+        unsafe { self.current.load().find(hash, eq) }
     }
 
     /// Gets a reference to an element in the table.
@@ -536,32 +545,45 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 
     #[inline]
+    pub fn lock(&self) -> Locked<'_, T, S> {
+        Locked {
+            table: self,
+            _guard: self.lock.lock(),
+        }
+    }
+
+    #[inline]
+    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> Locked<'a, T, S> {
+        // Verify that we are target of the guard
+        assert_eq!(
+            &self.lock as *const _,
+            MutexGuard::mutex(&guard) as *const _
+        );
+
+        Locked {
+            table: self,
+            _guard: guard,
+        }
+    }
+
+    #[inline]
     pub fn iter(&self) -> RawIter<T> {
         let table = self.current.load();
         unsafe { table.iter() }
     }
 }
 
-impl<T: Clone, S> SyncInsertTable<T, S> {
+impl<'a, T: Clone, S> Locked<'a, T, S> {
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_with_guard(
-        &self,
-        hash: u64,
-        value: T,
-        hasher: impl Fn(&T) -> u64,
-        guard: &mut MutexGuard<'_, ()>,
-    ) -> Bucket<T> {
-        // Verify that we are locked
-        assert_eq!(&self.lock as *const _, MutexGuard::mutex(guard) as *const _);
-
-        let mut table = self.current.load();
+    pub fn insert_new(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
+        let mut table = self.table.current.load();
 
         unsafe {
             if unlikely(table.info().growth_left == 0) {
-                table = self.locked_reserve(1, &hasher);
+                table = self.reserve(1, &hasher);
             }
 
             let index = table.info().find_insert_slot(hash);
@@ -575,32 +597,11 @@ impl<T: Clone, S> SyncInsertTable<T, S> {
         }
     }
 
-    /// Inserts a new element into the table, and returns its raw bucket.
-    ///
-    /// This does not check if the given element already exists in the table.
-    #[inline]
-    pub fn insert(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
-        self.insert_with_guard(hash, value, hasher, &mut self.lock.lock())
-    }
-
-    #[inline]
-    pub fn reserve_with_guard(
-        &self,
-        additional: usize,
-        hasher: impl Fn(&T) -> u64,
-        guard: &mut MutexGuard<'_, ()>,
-    ) {
-        // Verify that we are locked
-        assert_eq!(&self.lock as *const _, MutexGuard::mutex(guard) as *const _);
-
-        self.locked_reserve(additional, &hasher);
-    }
-
     /// Out-of-line slow path for `reserve` and `try_reserve`.
     #[cold]
     #[inline(never)]
-    fn locked_reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
-        let table = self.current.load();
+    fn reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
+        let table = self.table.current.load();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let new_items = match unsafe { table.info() }.items.checked_add(additional) {
@@ -610,21 +611,24 @@ impl<T: Clone, S> SyncInsertTable<T, S> {
 
         let full_capacity = bucket_mask_to_capacity(unsafe { table.info().bucket_mask });
 
-        let table = self.resize(usize::max(new_items, full_capacity + 1), hasher);
+        let new_capacity = usize::max(new_items, full_capacity + 1);
 
-        self.current.store(table);
+        unsafe {
+            debug_assert!(table.info().items <= new_capacity);
+        }
+
+        let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
+
+        let table = self.resize(buckets, hasher);
+
+        self.table.current.store(table);
         table
     }
 
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn resize(&self, capacity: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
-        let table = self.current.load();
-        unsafe {
-            debug_assert!(table.info().items <= capacity);
-        }
-        let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
-
+    fn resize(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+        let table = self.table.current.load();
         unsafe {
             let mut new_table = TableRef::allocate(buckets);
 
@@ -652,9 +656,24 @@ impl<T: Clone, S> SyncInsertTable<T, S> {
 
             guard.disable();
 
-            (*self.old.get()).push(table);
+            (*self.table.old.get()).push(table);
 
             new_table
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
+    #[inline]
+    pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
+        let hash = make_insert_hash(&self.hash_builder, &k);
+        let locked = self.lock();
+        let table = self.current.load();
+        if unsafe { table.find(hash, equivalent_key(&k)).is_some() } {
+            Some((k, v))
+        } else {
+            locked.insert_new(hash, (k, v), make_hasher::<K, _, V, S>(&self.hash_builder));
+            None
         }
     }
 }
