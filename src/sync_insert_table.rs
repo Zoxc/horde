@@ -3,13 +3,12 @@ use crate::{
         bitmask::{BitMask, BitMaskIter},
         imp::Group,
     },
-    util::{equivalent_key, make_hasher, make_insert_hash},
+    util::{equivalent_key, make_hash, make_hasher, make_insert_hash},
     OnDrop,
 };
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
-use std::hash::Hash;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
@@ -21,6 +20,7 @@ use std::{
     mem,
     sync::atomic::{AtomicU8, Ordering},
 };
+use std::{borrow::Borrow, hash::Hash};
 mod code;
 mod tests;
 
@@ -489,7 +489,7 @@ impl<T, S> SyncInsertTable<T, S> {
 
     /// Searches for an element in the table.
     #[inline]
-    pub fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+    fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
         unsafe { self.current.load().find(hash, eq) }
     }
 
@@ -664,6 +664,21 @@ impl<'a, T: Clone, S> Locked<'a, T, S> {
 }
 
 impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
+    #[inline]
+    pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let hash = make_hash::<K, Q, S>(&self.hash_builder, k);
+        // Avoid `Option::map` because it bloats LLVM IR.
+
+        match self.get(hash, equivalent_key(k)) {
+            Some(&(_, ref v)) => Some(v),
+            None => None,
+        }
+    }
+
     #[inline]
     pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
         let hash = make_insert_hash(&self.hash_builder, &k);
