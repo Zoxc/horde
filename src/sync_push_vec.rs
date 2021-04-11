@@ -17,6 +17,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use std::{
+    cmp,
     ptr::slice_from_raw_parts,
     sync::{atomic::AtomicUsize, Arc},
 };
@@ -176,6 +177,38 @@ impl<T> TableRef<T> {
         debug_assert!(index < self.info().items.load(Ordering::Acquire));
 
         self.first().add(index)
+    }
+}
+
+impl<T: Clone> TableRef<T> {
+    /// Allocates a new table of a different size and moves the contents of the
+    /// current table into it.
+    fn clone(&self, new_capacity: usize) -> TableRef<T> {
+        unsafe {
+            let mut new_table = TableRef::<T>::allocate(new_capacity);
+
+            let mut guard = guard(Some(new_table), |new_table| {
+                new_table.map(|new_table| new_table.free());
+            });
+
+            let iter = (*slice_from_raw_parts(
+                self.first() as *const T,
+                self.info().items.load(Ordering::Relaxed),
+            ))
+            .iter();
+
+            // Copy all elements to the new table.
+            for (index, item) in iter.enumerate() {
+                new_table.first().add(index).write(item.clone());
+
+                // Write items per iteration in case `clone` panics.
+                *new_table.info_mut().items.get_mut() = index + 1;
+            }
+
+            *guard = None;
+
+            new_table
+        }
     }
 }
 
@@ -380,18 +413,37 @@ impl<'a, T: Clone> Write<'a, T> {
         self.reserve(1)
     }
 
+    // Tiny Vecs are dumb. Skip to:
+    // - 8 if the element size is 1, because any heap allocators is likely
+    //   to round up a request of less than 8 bytes to at least 8 bytes.
+    // - 4 if elements are moderate-sized (<= 1 KiB).
+    // - 1 otherwise, to avoid wasting too much space for very short Vecs.
+    const MIN_NON_ZERO_CAP: usize = if mem::size_of::<T>() == 1 {
+        8
+    } else if mem::size_of::<T>() <= 1024 {
+        4
+    } else {
+        1
+    };
+
     fn reserve(&self, additional: usize) -> TableRef<T> {
         let table = self.table.current.load();
 
         let items = unsafe { table.info().items.load(Ordering::Relaxed) };
+        let capacity = unsafe { table.info().capacity };
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
-        let new_items = match items.checked_add(additional) {
-            Some(new_items) => new_items,
+        let required_cap = match items.checked_add(additional) {
+            Some(required_cap) => required_cap,
             None => panic!("capacity overflow"),
         };
 
-        let new_table = self.resize(new_items);
+        // This guarantees exponential growth. The doubling cannot overflow
+        // because `cap <= isize::MAX` and the type of `cap` is `usize`.
+        let cap = cmp::max(capacity * 2, required_cap);
+        let cap = cmp::max(Self::MIN_NON_ZERO_CAP, cap);
+
+        let new_table = table.clone(cap);
 
         self.table.current.store(new_table);
 
@@ -409,41 +461,6 @@ impl<'a, T: Clone> Write<'a, T> {
         });
 
         new_table
-    }
-
-    /// Allocates a new table of a different size and moves the contents of the
-    /// current table into it.
-    fn resize(&self, capacity: usize) -> TableRef<T> {
-        let table = self.table.current.load();
-
-        unsafe {
-            let mut new_table = TableRef::<T>::allocate(capacity);
-
-            let mut guard = guard(Some(new_table), |new_table| {
-                new_table.map(|new_table| new_table.free());
-            });
-
-            let iter = (*slice_from_raw_parts(
-                table.first() as *const T,
-                table.info().items.load(Ordering::Relaxed),
-            ))
-            .iter();
-
-            // Copy all elements to the new table.
-            for (index, item) in iter.enumerate() {
-                new_table.first().add(index).write(item.clone());
-
-                // Write items per iteration in case `clone` panics.
-                new_table
-                    .info_mut()
-                    .items
-                    .store(index + 1, Ordering::Relaxed);
-            }
-
-            *guard = None;
-
-            new_table
-        }
     }
 }
 

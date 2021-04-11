@@ -446,6 +446,44 @@ impl<T> TableRef<T> {
     }
 }
 
+impl<T: Clone> TableRef<T> {
+    /// Allocates a new table of a different size and moves the contents of the
+    /// current table into it.
+    fn clone(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+        unsafe {
+            let mut new_table = TableRef::allocate(buckets);
+
+            new_table.info_mut().items = self.info().items;
+            new_table.info_mut().growth_left -= self.info().items;
+
+            let mut guard = guard(Some(new_table), |new_table| {
+                new_table.map(|new_table| new_table.free());
+            });
+
+            // Copy all elements to the new table.
+            for item in self.iter() {
+                // This may panic.
+                let hash = hasher(item.as_ref());
+
+                // We can use a simpler version of insert() here since:
+                // - there are no DELETED entries.
+                // - we know there is enough space in the table.
+                // - all elements are unique.
+                let (index, _) = new_table.info().prepare_insert_slot(hash);
+
+                // FIXME: Scheme to drop items on panic?
+
+                // Clone may panic
+                new_table.bucket(index).write(item.as_ref().clone());
+            }
+
+            *guard = None;
+
+            new_table
+        }
+    }
+}
+
 struct DestroyTable<T> {
     table: TableRef<T>,
     lock: Mutex<bool>,
@@ -680,7 +718,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
 
         let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
 
-        let new_table = self.resize(buckets, hasher);
+        let new_table = table.clone(buckets, hasher);
 
         self.table.current.store(new_table);
 
@@ -698,43 +736,6 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
         });
 
         new_table
-    }
-
-    /// Allocates a new table of a different size and moves the contents of the
-    /// current table into it.
-    fn resize(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
-        let table = self.table.current.load();
-        unsafe {
-            let mut new_table = TableRef::allocate(buckets);
-
-            new_table.info_mut().items = table.info().items;
-            new_table.info_mut().growth_left -= table.info().items;
-
-            let mut guard = guard(Some(new_table), |new_table| {
-                new_table.map(|new_table| new_table.free());
-            });
-
-            // Copy all elements to the new table.
-            for item in table.iter() {
-                // This may panic.
-                let hash = hasher(item.as_ref());
-
-                // We can use a simpler version of insert() here since:
-                // - there are no DELETED entries.
-                // - we know there is enough space in the table.
-                // - all elements are unique.
-                let (index, _) = new_table.info().prepare_insert_slot(hash);
-
-                // FIXME: Scheme to drop items on panic?
-
-                // Clone may panic
-                new_table.bucket(index).write(item.as_ref().clone());
-            }
-
-            *guard = None;
-
-            new_table
-        }
     }
 }
 
