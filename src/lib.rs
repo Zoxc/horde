@@ -26,3 +26,4 @@ mod scopeguard;
 mod util;
 
 pub mod sync_insert_table;
+pub mod sync_push_vec;

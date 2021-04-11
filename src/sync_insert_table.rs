@@ -477,6 +477,7 @@ unsafe impl<T: Send, S> Send for SyncInsertTable<T, S> {}
 unsafe impl<T: Send, S> Sync for SyncInsertTable<T, S> {}
 
 impl<T, S: Default> Default for SyncInsertTable<T, S> {
+    #[inline]
     fn default() -> Self {
         Self::new_with(Default::default(), 0)
     }
@@ -638,7 +639,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> &T {
+    pub fn insert_new(&self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> &'a T {
         let mut table = self.table.current.load();
 
         unsafe {
