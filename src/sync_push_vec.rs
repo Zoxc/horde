@@ -352,9 +352,10 @@ impl<'a, T> Write<'a, T> {
 }
 
 impl<'a, T: Clone> Write<'a, T> {
-    /// Inserts a new element into the end of the table, and returns a refernce to it.
+    /// Inserts a new element into the end of the table, and returns a refernce to it along
+    /// with its index.
     #[inline]
-    pub fn push(&self, value: T) -> &'a T {
+    pub fn push(&self, value: T) -> (&'a T, usize) {
         let mut table = self.table.current.load();
         unsafe {
             let items = table.info().items.load(Ordering::Relaxed);
@@ -369,7 +370,7 @@ impl<'a, T: Clone> Write<'a, T> {
 
             table.info().items.store(items + 1, Ordering::Release);
 
-            &*result
+            (&*result, items)
         }
     }
 
