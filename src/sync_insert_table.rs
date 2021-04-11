@@ -246,7 +246,7 @@ impl TableInfo {
         let mut probe_seq = self.probe_seq(hash);
         loop {
             let group = Group::load(self.ctrl(probe_seq.pos));
-            if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
+            if let Some(bit) = group.match_empty().lowest_set_bit() {
                 let result = (probe_seq.pos + bit) & self.bucket_mask;
 
                 return result;

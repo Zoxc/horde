@@ -104,19 +104,9 @@ impl Group {
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which are
-    /// `EMPTY`.
-    #[inline]
-    pub fn match_empty(self) -> BitMask {
-        // If the high bit is set, then the byte must be either:
-        // 1111_1111 (EMPTY) or 1000_0000 (DELETED).
-        // So we can just check if the top two bits are 1 by ANDing them.
-        BitMask((self.0 & (self.0 << 1) & repeat(0x80)).to_le())
-    }
-
-    /// Returns a `BitMask` indicating all bytes in the group which are
     /// `EMPTY` or `DELETED`.
     #[inline]
-    pub fn match_empty_or_deleted(self) -> BitMask {
+    pub fn match_empty(self) -> BitMask {
         // A byte is EMPTY or DELETED iff the high bit is set
         BitMask((self.0 & repeat(0x80)).to_le())
     }
@@ -124,6 +114,6 @@ impl Group {
     /// Returns a `BitMask` indicating all bytes in the group which are full.
     #[inline]
     pub fn match_full(self) -> BitMask {
-        self.match_empty_or_deleted().invert()
+        self.match_empty().invert()
     }
 }
