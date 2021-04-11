@@ -249,23 +249,6 @@ impl TableInfo {
             if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
                 let result = (probe_seq.pos + bit) & self.bucket_mask;
 
-                // In tables smaller than the group width, trailing control
-                // bytes outside the range of the table are filled with
-                // EMPTY entries. These will unfortunately trigger a
-                // match, but once masked may point to a full bucket that
-                // is already occupied. We detect this situation here and
-                // perform a second scan starting at the begining of the
-                // table. This second scan is guaranteed to find an empty
-                // slot (due to the load factor) before hitting the trailing
-                // control bytes (containing EMPTY).
-                if unlikely(is_full(*self.ctrl(result))) {
-                    debug_assert!(self.bucket_mask < Group::WIDTH);
-                    debug_assert_ne!(probe_seq.pos, 0);
-                    return Group::load_aligned(self.ctrl(0))
-                        .match_empty_or_deleted()
-                        .lowest_set_bit_nonzero();
-                }
-
                 return result;
             }
             probe_seq.move_next(self.bucket_mask);
@@ -749,6 +732,11 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
 
         let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
 
+        // Have at least the number of buckets required to fill a group.
+        // This avoids logic to deal with control bytes not associated with a bucket
+        // when batch processing a group.
+        let buckets = usize::max(buckets, Group::WIDTH);
+
         let new_table = table.clone(buckets, hasher);
 
         self.table.current.store(new_table);
@@ -970,12 +958,6 @@ fn h2(hash: u64) -> u8 {
 /// Control byte value for an empty bucket.
 const EMPTY: u8 = 0b1111_1111;
 
-/// Checks whether a control byte represents a full bucket (top bit is clear).
-#[inline]
-fn is_full(ctrl: u8) -> bool {
-    ctrl & 0x80 == 0
-}
-
 /// Probe sequence based on triangular numbers, which is guaranteed (since our
 /// table size is a power of two) to visit every group of elements exactly once.
 ///
@@ -1039,6 +1021,7 @@ impl<'a, T> RawIterHash<'a, T> {
         }
     }
 }
+
 impl<'a> RawIterHashInner<'a> {
     #[inline]
     fn new(table: &'a TableInfo, hash: u64) -> Self {
