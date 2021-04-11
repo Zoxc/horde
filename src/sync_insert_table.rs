@@ -12,6 +12,7 @@ use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
 use rustc_hash::FxHasher;
 use std::hash::BuildHasherDefault;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
@@ -27,6 +28,10 @@ use std::{
 use std::{borrow::Borrow, hash::Hash};
 mod code;
 mod tests;
+
+// TODO: Add an API for `get` which returns the exact control byte a key would be inserted in.
+// Add fast paths for insertions and finds which only tests that one byte with a fallback
+// with a full search.
 
 /// A reference to a hash table bucket containing a `T`.
 ///
@@ -97,7 +102,21 @@ pub struct Read<'a, T, S> {
 /// or by exclusive access to the table.
 pub struct Write<'a, T, S> {
     table: &'a SyncInsertTable<T, S>,
-    _guard: Option<MutexGuard<'a, ()>>,
+}
+
+/// A reference to the table which can write to it. It is acquired either by a lock.
+pub struct LockedWrite<'a, T, S> {
+    table: Write<'a, T, S>,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl<'a, T, S> Deref for LockedWrite<'a, T, S> {
+    type Target = Write<'a, T, S>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.table
+    }
 }
 
 pub type DefaultHashBuilder = BuildHasherDefault<FxHasher>;
@@ -575,18 +594,12 @@ impl<T, S> SyncInsertTable<T, S> {
 
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T, S> {
-        Write {
-            table: self,
-            _guard: None,
-        }
+        Write { table: self }
     }
 
     #[inline]
     pub fn write(&mut self) -> Write<'_, T, S> {
-        Write {
-            table: self,
-            _guard: None,
-        }
+        Write { table: self }
     }
 
     /// Returns the number of elements in the table.
@@ -596,24 +609,24 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 
     #[inline]
-    pub fn lock(&self) -> Write<'_, T, S> {
-        Write {
-            table: self,
-            _guard: Some(self.lock.lock()),
+    pub fn lock(&self) -> LockedWrite<'_, T, S> {
+        LockedWrite {
+            table: Write { table: self },
+            _guard: self.lock.lock(),
         }
     }
 
     #[inline]
-    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> Write<'a, T, S> {
+    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, T, S> {
         // Verify that we are target of the guard
         assert_eq!(
             &self.lock as *const _,
             MutexGuard::mutex(&guard) as *const _
         );
 
-        Write {
-            table: self,
-            _guard: Some(guard),
+        LockedWrite {
+            table: Write { table: self },
+            _guard: guard,
         }
     }
 }
@@ -699,6 +712,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
 
         unsafe {
             if unlikely(table.info().growth_left == 0) {
+                // TODO: Make a reserve_one function
                 table = self.reserve(1, &hasher);
             }
 

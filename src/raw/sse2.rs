@@ -45,6 +45,8 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
+        // TODO: Use a volatile read here instead for better code generation.
+        // Find out if compiler fences are enough to make that atomic.
         let mut result: x86::__m128i;
         asm!(
             "movdqu {}, [{}]",
@@ -60,6 +62,8 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
+        // TODO: Use a volatile read here instead for better code generation.
+        // Find out if compiler fences are enough to make that atomic.
         // FIXME: use align_offset once it stabilizes
         debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
 
@@ -91,6 +95,7 @@ impl Group {
         }
     }
 
+    // TODO: Remove
     /// Returns a `BitMask` indicating all bytes in the group which are
     /// `EMPTY`.
     #[inline]

@@ -8,6 +8,10 @@ use std::{
 
 mod code;
 
+// TODO: Make the &'a Pin into a ZST Pin<'a>.
+// TODO: Use a reference count of pins and a PinRef ZST with a destructor that drops the reference
+// so a closure with the `pin` function isn't required.
+
 /// Proof that the guard is initialized on this thread.
 #[derive(Clone, Copy)]
 pub struct Init {

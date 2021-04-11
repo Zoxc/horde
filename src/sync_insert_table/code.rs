@@ -48,6 +48,11 @@ unsafe fn insert_test2(table: &SyncInsertTable<u64>) {
 }
 
 #[no_mangle]
+unsafe fn insert_slot_test(table: TableRef<usize>, hash: u64) -> usize {
+    table.info().find_insert_slot(hash)
+}
+
+#[no_mangle]
 fn find_test2(table: &HashMap<usize, ()>) -> Option<usize> {
     table.get_key_value(&5).map(|b| *b.0)
 }
