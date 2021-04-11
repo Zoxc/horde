@@ -43,6 +43,11 @@ fn insert_test(table: &SyncInsertTable<u64>) {
 }
 
 #[no_mangle]
+unsafe fn insert_test2(table: &SyncInsertTable<u64>) {
+    table.unsafe_write().insert_new(5, 5, |a| *a);
+}
+
+#[no_mangle]
 fn find_test2(table: &HashMap<usize, ()>) -> Option<usize> {
     table.get_key_value(&5).map(|b| *b.0)
 }

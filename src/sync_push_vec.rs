@@ -11,6 +11,7 @@ use std::{
     intrinsics::unlikely,
     marker::PhantomData,
     mem,
+    ops::Deref,
     slice::Iter,
     sync::atomic::Ordering,
 };
@@ -32,7 +33,21 @@ pub struct Read<'a, T> {
 /// or by exclusive access to the table.
 pub struct Write<'a, T> {
     table: &'a SyncPushVec<T>,
-    _guard: Option<MutexGuard<'a, ()>>,
+}
+
+/// A reference to the table which can write to it. It is acquired either by a lock.
+pub struct LockedWrite<'a, T> {
+    table: Write<'a, T>,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl<'a, T> Deref for LockedWrite<'a, T> {
+    type Target = Write<'a, T>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.table
+    }
 }
 
 pub struct SyncPushVec<T> {
@@ -245,18 +260,12 @@ impl<T> SyncPushVec<T> {
 
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T> {
-        Write {
-            table: self,
-            _guard: None,
-        }
+        Write { table: self }
     }
 
     #[inline]
     pub fn write(&mut self) -> Write<'_, T> {
-        Write {
-            table: self,
-            _guard: None,
-        }
+        Write { table: self }
     }
 
     /// Returns the number of elements in the table.
@@ -266,24 +275,24 @@ impl<T> SyncPushVec<T> {
     }
 
     #[inline]
-    pub fn lock(&self) -> Write<'_, T> {
-        Write {
-            table: self,
-            _guard: Some(self.lock.lock()),
+    pub fn lock(&self) -> LockedWrite<'_, T> {
+        LockedWrite {
+            table: Write { table: self },
+            _guard: self.lock.lock(),
         }
     }
 
     #[inline]
-    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> Write<'a, T> {
+    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, T> {
         // Verify that we are target of the guard
         assert_eq!(
             &self.lock as *const _,
             MutexGuard::mutex(&guard) as *const _
         );
 
-        Write {
-            table: self,
-            _guard: Some(guard),
+        LockedWrite {
+            table: Write { table: self },
+            _guard: guard,
         }
     }
 }
@@ -342,17 +351,15 @@ impl<'a, T> Write<'a, T> {
 }
 
 impl<'a, T: Clone> Write<'a, T> {
-    /// Inserts a new element into the table, and returns its raw bucket.
-    ///
-    /// This does not check if the given element already exists in the table.
+    /// Inserts a new element into the end of the table, and returns a refernce to it.
     #[inline]
     pub fn push(&self, value: T) -> &'a T {
         let mut table = self.table.current.load();
-
         unsafe {
             let items = table.info().items.load(Ordering::Relaxed);
+
             if unlikely(items == table.info().capacity) {
-                table = self.reserve(1);
+                table = self.reserve_one();
             }
 
             let result = table.first().add(items);
@@ -367,6 +374,10 @@ impl<'a, T: Clone> Write<'a, T> {
 
     #[cold]
     #[inline(never)]
+    fn reserve_one(&self) -> TableRef<T> {
+        self.reserve(1)
+    }
+
     fn reserve(&self, additional: usize) -> TableRef<T> {
         let table = self.table.current.load();
 
