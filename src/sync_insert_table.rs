@@ -740,8 +740,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
 
 impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Write<'_, (K, V), S> {
     #[inline]
-    pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
-        let hash = make_insert_hash(&self.table.hash_builder, &k);
+    pub fn map_insert_with_hash(&self, k: K, v: V, hash: u64) -> Option<(K, V)> {
         let table = self.table.current.load();
         if unsafe { table.find(hash, equivalent_key(&k)).is_some() } {
             Some((k, v))
@@ -753,6 +752,12 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Write<'_, (K, V), S> {
             );
             None
         }
+    }
+
+    #[inline]
+    pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
+        let hash = make_insert_hash(&self.table.hash_builder, &k);
+        self.map_insert_with_hash(k, v, hash)
     }
 }
 
@@ -790,8 +795,8 @@ impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
         Q: Hash + Eq,
     {
         let hash = make_hash::<K, Q, S>(&self.table.hash_builder, k);
-        // Avoid `Option::map` because it bloats LLVM IR.
 
+        // Avoid `Option::map` because it bloats LLVM IR.
         match self.get(hash, equivalent_key(k)) {
             Some(&(_, ref v)) => Some(v),
             None => None,
@@ -803,14 +808,7 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> 
     #[inline]
     pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
         let hash = make_insert_hash(&self.hash_builder, &k);
-        let locked = self.lock();
-        let table = self.current.load();
-        if unsafe { table.find(hash, equivalent_key(&k)).is_some() } {
-            Some((k, v))
-        } else {
-            locked.insert_new(hash, (k, v), make_hasher::<K, _, V, S>(&self.hash_builder));
-            None
-        }
+        self.lock().map_insert_with_hash(k, v, hash)
     }
 }
 
