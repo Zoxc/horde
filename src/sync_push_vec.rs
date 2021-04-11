@@ -418,7 +418,7 @@ impl<'a, T: Clone> Write<'a, T> {
 
             // Copy all elements to the new table.
             for (index, item) in iter.enumerate() {
-                new_table.data(index).write(item.clone());
+                new_table.first().add(index).write(item.clone());
 
                 // Write items per iteration in case `clone` panics.
                 new_table
