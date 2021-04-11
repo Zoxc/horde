@@ -618,6 +618,20 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 }
 
+impl<T, S: BuildHasher> SyncInsertTable<T, S> {
+    #[inline]
+    pub fn make_hash<V: Hash + ?Sized>(&self, val: &V) -> u64 {
+        make_insert_hash(&self.hash_builder, val)
+    }
+}
+
+impl<K: Hash, V, S: BuildHasher> SyncInsertTable<(K, V), S> {
+    #[inline]
+    pub fn map_hash_key(&self, key: &K) -> u64 {
+        self.make_hash(key)
+    }
+}
+
 impl<'a, T, S> Read<'a, T, S> {
     /// Gets a reference to an element in the table.
     #[inline]

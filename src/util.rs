@@ -44,7 +44,7 @@ where
 }
 
 #[inline]
-pub(crate) fn make_insert_hash<K, S>(hash_builder: &S, val: &K) -> u64
+pub(crate) fn make_insert_hash<K: ?Sized, S>(hash_builder: &S, val: &K) -> u64
 where
     K: Hash,
     S: BuildHasher,
