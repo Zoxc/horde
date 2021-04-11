@@ -22,7 +22,7 @@ fn high_align() {
 
 #[test]
 fn test_create_capacity_zero() {
-    let mut m = SyncInsertTable::new_with(RandomState::new(), 0);
+    let m = SyncInsertTable::new_with(RandomState::new(), 0);
 
     assert!(m.map_insert(1, 1).is_none());
 
@@ -34,7 +34,7 @@ fn test_create_capacity_zero() {
 
 #[test]
 fn test_insert() {
-    let mut m = SyncInsertTable::new();
+    let m = SyncInsertTable::new();
     assert_eq!(m.len(), 0);
     assert!(m.map_insert(1, 2).is_none());
     assert_eq!(m.len(), 1);
@@ -48,7 +48,7 @@ fn test_insert() {
 
 #[test]
 fn test_iter() {
-    let mut m = SyncInsertTable::new();
+    let m = SyncInsertTable::new();
     assert!(m.map_insert(1, 2).is_none());
     assert!(m.map_insert(5, 3).is_none());
     assert!(m.map_insert(2, 4).is_none());
@@ -66,7 +66,7 @@ fn test_iter() {
 
 #[test]
 fn test_insert_conflicts() {
-    let mut m = SyncInsertTable::new_with(RandomState::default(), 4);
+    let m = SyncInsertTable::new_with(RandomState::default(), 4);
     assert!(m.map_insert(1, 2).is_none());
     assert!(m.map_insert(5, 3).is_none());
     assert!(m.map_insert(9, 4).is_none());
@@ -79,7 +79,7 @@ fn test_insert_conflicts() {
 
 #[test]
 fn test_expand() {
-    let mut m = SyncInsertTable::new();
+    let m = SyncInsertTable::new();
 
     assert_eq!(m.len(), 0);
 
@@ -97,7 +97,7 @@ fn test_expand() {
 
 #[test]
 fn test_find() {
-    let mut m = SyncInsertTable::new();
+    let m = SyncInsertTable::new();
     assert!(m.map_get(&1).is_none());
     m.map_insert(1, 2);
     match m.map_get(&1) {
@@ -110,7 +110,7 @@ fn test_find() {
 
 #[test]
 fn test_capacity_not_less_than_len() {
-    let mut a: SyncInsertTable<(i32, i32)> = SyncInsertTable::new();
+    let a: SyncInsertTable<(i32, i32)> = SyncInsertTable::new();
     let mut item = 0;
 
     for _ in 0..116 {

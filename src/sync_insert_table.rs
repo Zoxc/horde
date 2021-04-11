@@ -738,6 +738,39 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
     }
 }
 
+impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Write<'_, (K, V), S> {
+    #[inline]
+    pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
+        let hash = make_insert_hash(&self.table.hash_builder, &k);
+        let table = self.table.current.load();
+        if unsafe { table.find(hash, equivalent_key(&k)).is_some() } {
+            Some((k, v))
+        } else {
+            self.insert_new(
+                hash,
+                (k, v),
+                make_hasher::<K, _, V, S>(&self.table.hash_builder),
+            );
+            None
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher + Default> SyncInsertTable<(K, V), S> {
+    #[inline]
+    pub fn map_from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let mut map = Self::new_with(S::default(), iter.size_hint().0);
+        {
+            let write = map.write();
+            iter.for_each(|(k, v)| {
+                write.map_insert(k, v);
+            });
+        }
+        map
+    }
+}
+
 impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
     #[inline]
     pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<V>
@@ -768,7 +801,7 @@ impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
 
 impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
     #[inline]
-    pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
+    pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
         let hash = make_insert_hash(&self.hash_builder, &k);
         let locked = self.lock();
         let table = self.current.load();

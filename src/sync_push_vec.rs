@@ -9,6 +9,7 @@ use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
     intrinsics::unlikely,
+    iter::FromIterator,
     marker::PhantomData,
     mem,
     ops::Deref,
@@ -442,5 +443,18 @@ impl<'a, T: Clone> Write<'a, T> {
 
             new_table
         }
+    }
+}
+
+impl<T: Clone> FromIterator<T> for SyncPushVec<T> {
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let mut map = Self::with_capacity(iter.size_hint().0);
+        let write = map.write();
+        iter.for_each(|v| {
+            write.push(v);
+        });
+        map
     }
 }
