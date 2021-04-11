@@ -10,11 +10,12 @@ use crate::{
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
+use rustc_hash::FxHasher;
+use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
-    collections::hash_map::RandomState,
     fmt,
     hash::BuildHasher,
     intrinsics::{likely, unlikely},
@@ -99,8 +100,10 @@ pub struct Write<'a, T, S> {
     _guard: Option<MutexGuard<'a, ()>>,
 }
 
+pub type DefaultHashBuilder = BuildHasherDefault<FxHasher>;
+
 /// A raw hash table with an unsafe API.
-pub struct SyncInsertTable<T, S = RandomState> {
+pub struct SyncInsertTable<T, S = DefaultHashBuilder> {
     hash_builder: S,
 
     current: AtomicCell<TableRef<T>>,
@@ -521,7 +524,7 @@ impl<T, S: Default> Default for SyncInsertTable<T, S> {
     }
 }
 
-impl<T> SyncInsertTable<T, RandomState> {
+impl<T> SyncInsertTable<T, DefaultHashBuilder> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
