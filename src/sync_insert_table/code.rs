@@ -61,8 +61,8 @@ unsafe fn potential_insert_opt(mut table: Write<'_, usize>, index: usize) {
 }
 
 #[no_mangle]
-fn find_test(table: &SyncInsertTable<usize>) -> Option<usize> {
-    unsafe { table.find(5, |a| *a == 5).map(|b| *b.as_ref()) }
+fn find_test(table: &SyncInsertTable<usize>, val: usize, hash: u64) -> Option<usize> {
+    unsafe { table.find(hash, |a| *a == val).map(|b| *b.as_ref()) }
 }
 
 #[no_mangle]

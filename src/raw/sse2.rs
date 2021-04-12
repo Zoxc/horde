@@ -16,6 +16,7 @@ pub const BITMASK_MASK: BitMaskWord = 0xffff;
 ///
 /// This implementation uses a 128-bit SSE value.
 #[derive(Copy, Clone)]
+#[repr(transparent)]
 pub struct Group(x86::__m128i);
 
 // FIXME: https://github.com/rust-lang/rust-clippy/issues/3859
@@ -45,15 +46,16 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
-        // TODO: Use a volatile read here instead for better code generation.
-        // Find out if compiler fences are enough to make that atomic.
         let mut result: x86::__m128i;
-        asm!(
-            "movdqu {}, [{}]",
-            out(xmm_reg) result,
-            in(reg) ptr,
-            options(pure, readonly, nostack, preserves_flags)
+
+        llvm_asm!(
+            "movdqu $1, $0"
+            : "=x"(result)
+            : "*m"(ptr)
+            : "memory"
+            : "volatile"
         );
+
         Group(result)
     }
 
@@ -68,12 +70,15 @@ impl Group {
         debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
 
         let mut result: x86::__m128i;
-        asm!(
-            "movdqa {}, [{}]",
-            out(xmm_reg) result,
-            in(reg) ptr,
-            options(pure, readonly, nostack, preserves_flags)
+
+        llvm_asm!(
+            "movdqa $1, $0"
+            : "=x"(result)
+            : "*m"(ptr)
+            : "memory"
+            : "volatile"
         );
+
         Group(result)
     }
 

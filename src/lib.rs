@@ -12,7 +12,8 @@
     nonnull_slice_from_raw_parts,
     maybe_uninit_array_assume_init,
     thread_local,
-    negative_impls
+    negative_impls,
+    llvm_asm
 )]
 
 extern crate alloc;
