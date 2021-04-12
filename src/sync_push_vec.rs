@@ -12,7 +12,7 @@ use std::{
     iter::FromIterator,
     marker::PhantomData,
     mem,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     slice::Iter,
     sync::atomic::Ordering,
 };
@@ -27,6 +27,7 @@ mod tests;
 
 /// A reference to the table which can read from it. It is acquired either by a pin,
 /// or by exclusive access to the table.
+#[derive(Clone, Copy)]
 pub struct Read<'a, T> {
     table: &'a SyncPushVec<T>,
 }
@@ -49,6 +50,13 @@ impl<'a, T> Deref for LockedWrite<'a, T> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         &self.table
+    }
+}
+
+impl<'a, T> DerefMut for LockedWrite<'a, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.table
     }
 }
 
