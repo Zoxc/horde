@@ -11,6 +11,6 @@ unsafe fn push(a: &SyncPushVec<usize>) {
 }
 
 #[no_mangle]
-unsafe fn push2(a: &Write<'_, usize>) {
+unsafe fn push2(a: &mut Write<'_, usize>) {
     a.push(4000);
 }

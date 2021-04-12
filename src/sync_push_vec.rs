@@ -396,7 +396,7 @@ impl<'a, T: Clone> Write<'a, T> {
     /// Inserts a new element into the end of the table, and returns a refernce to it along
     /// with its index.
     #[inline]
-    pub fn push(&self, value: T) -> (&'a T, usize) {
+    pub fn push(&mut self, value: T) -> (&'a T, usize) {
         let mut table = self.table.current.load();
         unsafe {
             let items = table.info().items.load(Ordering::Relaxed);
@@ -477,7 +477,7 @@ impl<T: Clone> FromIterator<T> for SyncPushVec<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let iter = iter.into_iter();
         let mut map = Self::with_capacity(iter.size_hint().0);
-        let write = map.write();
+        let mut write = map.write();
         iter.for_each(|v| {
             write.push(v);
         });
