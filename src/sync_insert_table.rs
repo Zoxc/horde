@@ -667,7 +667,7 @@ impl<T, S> SyncInsertTable<T, S> {
 
 impl<T, S: BuildHasher> SyncInsertTable<T, S> {
     #[inline]
-    pub fn hash<V: Hash + ?Sized>(&self, val: &V) -> u64 {
+    pub fn hash_any<V: Hash + ?Sized>(&self, val: &V) -> u64 {
         make_insert_hash(&self.hash_builder, val)
     }
 }
@@ -747,6 +747,33 @@ impl<'a, T, S> Read<'a, T, S> {
                 marker: PhantomData,
             }
         }
+    }
+
+    #[allow(dead_code)]
+    fn dump(&self)
+    where
+        T: std::fmt::Debug,
+    {
+        let table = self.table.current.load();
+
+        println!("Table dump:");
+
+        unsafe {
+            for i in 0..table.info().buckets() {
+                if *table.info().ctrl(i) == EMPTY {
+                    println!("[#{:x}]", i);
+                } else {
+                    println!(
+                        "[#{:x}, ${:x}, {:?}]",
+                        i,
+                        *table.info().ctrl(i),
+                        table.bucket(i).as_ref()
+                    );
+                }
+            }
+        }
+
+        println!("--------");
     }
 }
 
@@ -937,6 +964,7 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> 
 }
 
 /// Represents where an value would be if inserted.
+#[derive(Debug)]
 pub struct PotentialSlot {
     index: usize,
     bucket_mask: usize,
@@ -983,7 +1011,9 @@ impl PotentialSlot {
 
             // Verify that we have not expanded by checking the bucket_mask
             // and also check that the index is in bounds for safety.
-            if likely(bucket_mask == self.bucket_mask && index <= bucket_mask) {
+            if likely(
+                bucket_mask == self.bucket_mask, /*&& index <= bucket_mask*/
+            ) {
                 if likely(*table.info().ctrl(index) == EMPTY) {
                     return Err(self);
                 }
@@ -1046,27 +1076,27 @@ impl PotentialSlot {
             let mut table = table.table.current.load();
             let bucket_mask = table.info().bucket_mask;
             let index = self.index;
+            /*
+                       // Verify that we have not expanded by checking the bucket_mask
+                       // and also check that the index is in bounds for safety.
+                       if unlikely(
+                           bucket_mask != self.bucket_mask
+                               || index > bucket_mask
+                               || table.info().growth_left == 0,
+                       ) {
+                           return None;
+                       }
 
-            // Verify that we have not expanded by checking the bucket_mask
-            // and also check that the index is in bounds for safety.
-            if unlikely(
-                bucket_mask == self.bucket_mask
-                    && index <= bucket_mask
-                    && table.info().growth_left != 0,
-            ) {
-                return None;
-            }
+            if likely(*table.info().ctrl(index) == EMPTY) {*/
+            let bucket = table.bucket(index);
+            bucket.write(value);
 
-            if likely(*table.info().ctrl(index) == EMPTY) {
-                let bucket = table.bucket(index);
-                bucket.write(value);
+            table.info_mut().record_item_insert_at(index, hash);
 
-                table.info_mut().record_item_insert_at(index, hash);
-
-                Some(bucket.as_ref())
-            } else {
+            Some(bucket.as_ref())
+            /*} else {
                 None
-            }
+            } */
         }
     }
 }

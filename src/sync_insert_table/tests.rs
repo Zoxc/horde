@@ -149,18 +149,21 @@ fn rehash() {
     for i in 0..100 {
         table
             .lock()
-            .insert_new(table.hash(&i), i, SyncInsertTable::hasher);
+            .insert_new(table.hash_any(&i), i, SyncInsertTable::hasher);
     }
 
     pin(|pin| {
         for i in 0..100 {
             assert_eq!(
-                table.read(pin).get(table.hash(&i), |x| *x == i).map(|b| *b),
+                table
+                    .read(pin)
+                    .get(table.hash_any(&i), |x| *x == i)
+                    .map(|b| *b),
                 Some(i)
             );
             assert!(table
                 .read(pin)
-                .get(table.hash(&(i + 100)), |x| *x == i + 100)
+                .get(table.hash_any(&(i + 100)), |x| *x == i + 100)
                 .is_none());
         }
     });
@@ -171,7 +174,7 @@ fn rehash() {
 #[test]
 fn intern_test() {
     pin(|pin| {
-        let test_len = 20;
+        let test_len = 20000;
         let mut control = HashMap::new();
 
         let mut test = SyncInsertTable::new();
@@ -198,7 +201,7 @@ fn intern_test() {
         let mut test1 = test.read(pin).clone(SyncInsertTable::map_hasher);
 
         fn intern1(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) {
-            let hash = table.hash(&k);
+            let hash = table.hash_any(&k);
             let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
                 Ok(_) => return,
                 Err(p) => p,
@@ -210,7 +213,7 @@ fn intern_test() {
                     v.1;
                 }
                 None => {
-                    p.insert_new(&mut write, hash, (k, v), SyncInsertTable::hasher);
+                    p.insert_new(&mut write, hash, (k, v), SyncInsertTable::map_hasher);
                 }
             }
         }
@@ -232,7 +235,7 @@ fn intern_test() {
         let mut test2 = test.read(pin).clone(SyncInsertTable::map_hasher);
 
         fn intern2(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) {
-            let hash = table.hash(&k);
+            let hash = table.hash_any(&k);
             match table.read(pin).get(hash, |v| v.0 == k) {
                 Some(_) => return,
                 None => (),
@@ -263,7 +266,7 @@ fn intern_test() {
         let mut test3 = test.read(pin).clone(SyncInsertTable::map_hasher);
 
         fn intern3(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) {
-            let hash = table.hash(&k);
+            let hash = table.hash_any(&k);
             let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
                 Ok(_) => return,
                 Err(p) => p,
@@ -271,7 +274,7 @@ fn intern_test() {
 
             let mut write = table.lock();
 
-            write.reserve_one(SyncInsertTable::hasher);
+            write.reserve_one(SyncInsertTable::map_hasher);
 
             let p = p.refresh(write.read(), hash, |v| v.0 == k);
 

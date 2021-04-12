@@ -92,7 +92,7 @@ fn find_test2(table: &HashMap<usize, ()>) -> Option<usize> {
 
 #[no_mangle]
 fn intern_triple_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-    let hash = table.hash(&k);
+    let hash = table.hash_any(&k);
     match table.read(pin).get(hash, |v| v.0 == k) {
         Some(v) => return v.1,
         None => (),
@@ -110,7 +110,7 @@ fn intern_triple_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: 
 
 #[no_mangle]
 fn intern_try_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-    let hash = table.hash(&k);
+    let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
         Err(p) => p,
@@ -128,7 +128,7 @@ fn intern_try_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pi
 
 #[no_mangle]
 fn intern_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-    let hash = table.hash(&k);
+    let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
         Err(p) => p,
@@ -139,6 +139,29 @@ fn intern_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -
         Some(v) => v.1,
         None => {
             p.insert_new(&mut write, hash, (k, v), SyncInsertTable::hasher);
+            v
+        }
+    }
+}
+
+#[no_mangle]
+fn intern_refresh_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+    let hash = table.hash_any(&k);
+    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+        Ok(v) => return v.1,
+        Err(p) => p,
+    };
+
+    let mut write = table.lock();
+
+    write.reserve_one(SyncInsertTable::hasher);
+
+    let p = p.refresh(write.read(), hash, |v| v.0 == k);
+
+    match p {
+        Ok(v) => v.1,
+        Err(p) => {
+            p.try_insert_new(&mut write, hash, (k, v));
             v
         }
     }
