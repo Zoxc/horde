@@ -51,7 +51,7 @@ fn find_test(table: &SyncInsertTable<usize>) -> Option<usize> {
 
 #[no_mangle]
 fn insert_test(table: &SyncInsertTable<u64>) {
-    table.lock().insert_new(5, 5, |a| *a);
+    table.lock().insert_new(5, 5, |_, a| *a);
 }
 
 #[no_mangle]
@@ -61,7 +61,7 @@ fn map_insert_test(table: &mut SyncInsertTable<(u64, u64)>) {
 
 #[no_mangle]
 unsafe fn insert_test2(table: &SyncInsertTable<u64>) {
-    table.unsafe_write().insert_new(5, 5, |a| *a);
+    table.unsafe_write().insert_new(5, 5, |_, a| *a);
 }
 
 #[no_mangle]

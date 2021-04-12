@@ -21,7 +21,7 @@ fn high_align() {
 
     table.find(1, |a| a == &A(1));
 
-    table.lock().insert_new(1, A(1), |a| a.0);
+    table.lock().insert_new(1, A(1), |_, a| a.0);
 
     release();
 }
@@ -146,15 +146,22 @@ fn test_capacity_not_less_than_len() {
 #[test]
 fn rehash() {
     let table = SyncInsertTable::new();
-    let hasher = |i: &u64| *i;
     for i in 0..100 {
-        table.lock().insert_new(i, i, hasher);
+        table
+            .lock()
+            .insert_new(table.hash(&i), i, SyncInsertTable::hasher);
     }
 
     pin(|pin| {
         for i in 0..100 {
-            assert_eq!(table.read(pin).get(i, |x| *x == i).map(|b| *b), Some(i));
-            assert!(table.read(pin).get(i + 100, |x| *x == i + 100).is_none());
+            assert_eq!(
+                table.read(pin).get(table.hash(&i), |x| *x == i).map(|b| *b),
+                Some(i)
+            );
+            assert!(table
+                .read(pin)
+                .get(table.hash(&(i + 100)), |x| *x == i + 100)
+                .is_none());
         }
     });
 
@@ -188,10 +195,10 @@ fn intern_test() {
         assert_eq!(ca, cb);
 
         let mut test1_control = control.clone();
-        let mut test1 = test.read(pin).clone(|k| test.map_hash_key(&k.0));
+        let mut test1 = test.read(pin).clone(SyncInsertTable::map_hasher);
 
         fn intern1(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-            let hash = table.make_hash(&k);
+            let hash = table.hash(&k);
             match table.read(pin).get(hash, |v| v.0 == k) {
                 Some(v) => return v.1,
                 None => (),
@@ -201,7 +208,7 @@ fn intern_test() {
             match write.read().get(hash, |v| v.0 == k) {
                 Some(v) => v.1,
                 None => {
-                    write.insert_new(hash, (k, v), |v| v.0);
+                    write.insert_new(hash, (k, v), SyncInsertTable::map_hasher);
                     v
                 }
             }
@@ -221,21 +228,20 @@ fn intern_test() {
         assert_eq!(ca, cb);
 
         let mut test2_control = control.clone();
-        let mut test2 = test.read(pin).clone(|k| test.map_hash_key(&k.0));
+        let mut test2 = test.read(pin).clone(SyncInsertTable::map_hasher);
 
-        fn intern2(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-            let hash = table.make_hash(&k);
+        fn intern2(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) {
+            let hash = table.hash(&k);
             match table.read(pin).get(hash, |v| v.0 == k) {
-                Some(v) => return v.1,
+                Some(_) => return,
                 None => (),
             };
 
             let mut write = table.lock();
             match write.read().get(hash, |v| v.0 == k) {
-                Some(v) => v.1,
+                Some(_) => (),
                 None => {
-                    write.insert_new(hash, (k, v), |v| v.0);
-                    v
+                    write.insert_new(hash, (k, v), SyncInsertTable::map_hasher);
                 }
             }
         }

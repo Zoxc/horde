@@ -481,13 +481,15 @@ impl<T> TableRef<T> {
                 }
             }
 
-            let index = group.match_empty().lowest_set_bit();
-            if likely(index.is_some()) {
+            let bit = group.match_empty().lowest_set_bit();
+            if likely(bit.is_some()) {
+                let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
                 return Err(PotentialSlot {
-                    index: index.unwrap_unchecked(),
+                    index: index,
                     bucket_mask: self.info().bucket_mask,
                 });
             }
+
             probe_seq.move_next(self.info().bucket_mask);
             group = Group::load(self.info().ctrl(probe_seq.pos));
             bitmask = group.match_byte(h2_hash).into_iter();
@@ -498,7 +500,12 @@ impl<T> TableRef<T> {
 impl<T: Clone> TableRef<T> {
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn clone(&self, buckets: usize, hasher: impl Fn(&T) -> u64) -> TableRef<T> {
+    fn clone<S>(
+        &self,
+        hash_builder: &S,
+        buckets: usize,
+        hasher: impl Fn(&S, &T) -> u64,
+    ) -> TableRef<T> {
         unsafe {
             let mut new_table = TableRef::allocate(buckets);
 
@@ -512,7 +519,7 @@ impl<T: Clone> TableRef<T> {
             // Copy all elements to the new table.
             for item in self.iter() {
                 // This may panic.
-                let hash = hasher(item.as_ref());
+                let hash = hasher(hash_builder, item.as_ref());
 
                 // We can use a simpler version of insert() here since:
                 // - there are no DELETED entries.
@@ -660,15 +667,22 @@ impl<T, S> SyncInsertTable<T, S> {
 
 impl<T, S: BuildHasher> SyncInsertTable<T, S> {
     #[inline]
-    pub fn make_hash<V: Hash + ?Sized>(&self, val: &V) -> u64 {
+    pub fn hash<V: Hash + ?Sized>(&self, val: &V) -> u64 {
         make_insert_hash(&self.hash_builder, val)
+    }
+}
+
+impl<T: Hash, S: BuildHasher> SyncInsertTable<T, S> {
+    #[inline]
+    pub fn hasher(hash_builder: &S, val: &T) -> u64 {
+        make_insert_hash(hash_builder, val)
     }
 }
 
 impl<K: Hash, V, S: BuildHasher> SyncInsertTable<(K, V), S> {
     #[inline]
-    pub fn map_hash_key(&self, key: &K) -> u64 {
-        self.make_hash(key)
+    pub fn map_hasher(hash_builder: &S, val: &(K, V)) -> u64 {
+        make_insert_hash(hash_builder, &val.0)
     }
 }
 
@@ -738,7 +752,7 @@ impl<'a, T, S> Read<'a, T, S> {
 
 impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
     #[inline]
-    pub fn clone(&self, hasher: impl Fn(&T) -> u64) -> SyncInsertTable<T, S> {
+    pub fn clone(&self, hasher: impl Fn(&S, &T) -> u64) -> SyncInsertTable<T, S> {
         // TODO: Optimize
         let table = self.table.current.load();
         unsafe {
@@ -747,7 +761,7 @@ impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
             SyncInsertTable {
                 hash_builder: self.table.hash_builder.clone(),
                 current: AtomicCell::new(if buckets > 0 {
-                    table.clone(buckets, hasher)
+                    table.clone(&self.table.hash_builder, buckets, hasher)
                 } else {
                     TableRef::empty()
                 }),
@@ -771,7 +785,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> &'a T {
+    pub fn insert_new(&mut self, hash: u64, value: T, hasher: impl Fn(&S, &T) -> u64) -> &'a T {
         let mut table = self.table.current.load();
 
         unsafe {
@@ -794,7 +808,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
     /// Out-of-line slow path for `reserve` and `try_reserve`.
     #[cold]
     #[inline(never)]
-    fn reserve(&self, additional: usize, hasher: &impl Fn(&T) -> u64) -> TableRef<T> {
+    fn reserve(&self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
         let table = self.table.current.load();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
@@ -818,7 +832,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
         // when batch processing a group.
         let buckets = usize::max(buckets, Group::WIDTH);
 
-        let new_table = table.clone(buckets, hasher);
+        let new_table = table.clone(&self.table.hash_builder, buckets, hasher);
 
         self.table.current.store(new_table);
 
@@ -846,12 +860,7 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Write<'_, (K, V), S> {
         match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
             Ok(_) => Some((k, v)),
             Err(potential) => {
-                potential.insert_new(
-                    self,
-                    hash,
-                    (k, v),
-                    make_hasher::<K, _, V, S>(&self.table.hash_builder),
-                );
+                potential.insert_new(self, hash, (k, v), make_hasher::<K, _, V, S>());
                 None
             }
         }
@@ -956,7 +965,7 @@ impl PotentialSlot {
         table: &mut Write<'a, T, S>,
         hash: u64,
         value: T,
-        hasher: impl Fn(&T) -> u64,
+        hasher: impl Fn(&S, &T) -> u64,
     ) -> &'a T {
         unsafe {
             let mut table = table.table.current.load();
@@ -970,6 +979,8 @@ impl PotentialSlot {
                     && index <= bucket_mask
                     && table.info().growth_left != 0,
             ) {
+                debug_assert_eq!(index, table.info().find_insert_slot(hash));
+
                 if likely(*table.info().ctrl(index) == EMPTY) {
                     let bucket = table.bucket(index);
                     bucket.write(value);
