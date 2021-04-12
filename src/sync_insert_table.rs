@@ -790,8 +790,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
 
         unsafe {
             if unlikely(table.info().growth_left == 0) {
-                // TODO: Make a reserve_one function
-                table = self.reserve(1, &hasher);
+                table = self.expand_by_one(&hasher);
             }
 
             let index = table.info().find_insert_slot(hash);
@@ -805,10 +804,23 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
         }
     }
 
-    /// Out-of-line slow path for `reserve` and `try_reserve`.
+    #[inline]
+    pub fn reserve_one(&mut self, hasher: impl Fn(&S, &T) -> u64) {
+        let table = self.table.current.load();
+
+        if unlikely(unsafe { table.info().growth_left } == 0) {
+            self.expand_by_one(&hasher);
+        }
+    }
+
     #[cold]
     #[inline(never)]
-    fn reserve(&self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
+    fn expand_by_one(&self, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
+        self.expand_by(1, hasher)
+    }
+
+    /// Out-of-line slow path for `reserve` and `try_reserve`.
+    fn expand_by(&self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
         let table = self.table.current.load();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
@@ -954,6 +966,31 @@ impl PotentialSlot {
         }
 
         cold_path(|| table.get(hash, eq))
+    }
+
+    /// Gets a reference to an element in the table.
+    #[inline]
+    pub fn refresh<'a, T, S>(
+        self,
+        table: Read<'a, T, S>,
+        hash: u64,
+        eq: impl FnMut(&T) -> bool,
+    ) -> Result<&'a T, PotentialSlot> {
+        unsafe {
+            let table = table.table.current.load();
+            let bucket_mask = table.info().bucket_mask;
+            let index = self.index;
+
+            // Verify that we have not expanded by checking the bucket_mask
+            // and also check that the index is in bounds for safety.
+            if likely(bucket_mask == self.bucket_mask && index <= bucket_mask) {
+                if likely(*table.info().ctrl(index) == EMPTY) {
+                    return Err(self);
+                }
+            }
+        }
+
+        cold_path(|| table.get_potential(hash, eq))
     }
 
     /// Inserts a new element into the table, and returns a reference to it.

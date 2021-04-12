@@ -197,19 +197,20 @@ fn intern_test() {
         let mut test1_control = control.clone();
         let mut test1 = test.read(pin).clone(SyncInsertTable::map_hasher);
 
-        fn intern1(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+        fn intern1(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) {
             let hash = table.hash(&k);
-            match table.read(pin).get(hash, |v| v.0 == k) {
-                Some(v) => return v.1,
-                None => (),
+            let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+                Ok(_) => return,
+                Err(p) => p,
             };
 
             let mut write = table.lock();
-            match write.read().get(hash, |v| v.0 == k) {
-                Some(v) => v.1,
+            match p.get(write.read(), hash, |v| v.0 == k) {
+                Some(v) => {
+                    v.1;
+                }
                 None => {
-                    write.insert_new(hash, (k, v), SyncInsertTable::map_hasher);
-                    v
+                    p.insert_new(&mut write, hash, (k, v), SyncInsertTable::hasher);
                 }
             }
         }
@@ -255,6 +256,44 @@ fn intern_test() {
         ca.sort();
 
         let mut cb: Vec<_> = test2.write().read().iter().map(|v| (v.0, v.1)).collect();
+        cb.sort();
+
+        assert_eq!(ca, cb);
+        let mut test3_control = control.clone();
+        let mut test3 = test.read(pin).clone(SyncInsertTable::map_hasher);
+
+        fn intern3(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) {
+            let hash = table.hash(&k);
+            let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+                Ok(_) => return,
+                Err(p) => p,
+            };
+
+            let mut write = table.lock();
+
+            write.reserve_one(SyncInsertTable::hasher);
+
+            let p = p.refresh(write.read(), hash, |v| v.0 == k);
+
+            match p {
+                Ok(v) => {
+                    v.1;
+                }
+                Err(p) => {
+                    p.try_insert_new(&mut write, hash, (k, v)).unwrap();
+                }
+            }
+        }
+
+        for i in 0..test_len {
+            test3_control.insert(i, i * 2);
+            intern3(&test3, i, i * 2, pin);
+        }
+
+        let mut ca: Vec<_> = test3_control.iter().map(|v| (*v.0, *v.1)).collect();
+        ca.sort();
+
+        let mut cb: Vec<_> = test3.write().read().iter().map(|v| (v.0, v.1)).collect();
         cb.sort();
 
         assert_eq!(ca, cb);

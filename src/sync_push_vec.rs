@@ -402,7 +402,7 @@ impl<'a, T: Clone> Write<'a, T> {
             let items = table.info().items.load(Ordering::Relaxed);
 
             if unlikely(items == table.info().capacity) {
-                table = self.reserve_one();
+                table = self.expand_by_one();
             }
 
             let result = table.first().add(items);
@@ -417,8 +417,8 @@ impl<'a, T: Clone> Write<'a, T> {
 
     #[cold]
     #[inline(never)]
-    fn reserve_one(&self) -> TableRef<T> {
-        self.reserve(1)
+    fn expand_by_one(&self) -> TableRef<T> {
+        self.expand_by(1)
     }
 
     // Tiny Vecs are dumb. Skip to:
@@ -434,7 +434,7 @@ impl<'a, T: Clone> Write<'a, T> {
         1
     };
 
-    fn reserve(&self, additional: usize) -> TableRef<T> {
+    fn expand_by(&self, additional: usize) -> TableRef<T> {
         let table = self.table.current.load();
 
         let items = unsafe { table.info().items.load(Ordering::Relaxed) };
