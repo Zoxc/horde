@@ -983,6 +983,44 @@ impl PotentialSlot {
 
         cold_path(|| table.insert_new(hash, value, hasher))
     }
+
+    /// Inserts a new element into the table, and returns a reference to it.
+    ///
+    /// This does not check if the given element already exists in the table.
+    #[inline]
+    pub fn try_insert_new<'a, T, S>(
+        &self,
+        table: &mut Write<'a, T, S>,
+        hash: u64,
+        value: T,
+    ) -> Option<&'a T> {
+        unsafe {
+            let mut table = table.table.current.load();
+            let bucket_mask = table.info().bucket_mask;
+            let index = self.index;
+
+            // Verify that we have not expanded by checking the bucket_mask
+            // and also check that the index is in bounds for safety.
+            if unlikely(
+                bucket_mask == self.bucket_mask
+                    && index <= bucket_mask
+                    && table.info().growth_left != 0,
+            ) {
+                return None;
+            }
+
+            if likely(*table.info().ctrl(index) == EMPTY) {
+                let bucket = table.bucket(index);
+                bucket.write(value);
+
+                table.info_mut().record_item_insert_at(index, hash);
+
+                Some(bucket.as_ref())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// An iterator over the entries of a `HashMap`.

@@ -6,6 +6,8 @@
 
 extern crate test;
 
+use std::hash::Hasher;
+
 use concurrent::{
     qsbr::{pin, Pin},
     sync_insert_table::SyncInsertTable,
@@ -23,35 +25,46 @@ fn insert(b: &mut Bencher) {
     })
 }
 
+fn intern_map() -> SyncInsertTable<(u64, u64)> {
+    let m = SyncInsertTable::new();
+    for i in 0..50000 {
+        let mut s = std::collections::hash_map::DefaultHasher::new();
+        s.write_u64(i);
+        let s = s.finish();
+        if s % 100 > 40 {
+            m.map_insert(i, i * 2);
+        }
+    }
+    m
+}
+
 #[inline(never)]
-fn intern_slow_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-    match table.read(pin).get(k, |v| v.0 == k) {
+fn intern3_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+    let hash = table.make_hash(&k);
+    match table.read(pin).get(hash, |v| v.0 == k) {
         Some(v) => return v.1,
         None => (),
     };
 
     let mut write = table.lock();
-    match write.read().get(k, |v| v.0 == k) {
+    match write.read().get(hash, |v| v.0 == k) {
         Some(v) => v.1,
         None => {
-            write.insert_new(k, (k, v), |v| v.0);
+            write.insert_new(hash, (k, v), |v| v.0);
             v
         }
     }
 }
 
 #[bench]
-fn intern_slow(b: &mut Bencher) {
-    let m = SyncInsertTable::new();
-    for i in (0..1000).step_by(2) {
-        m.map_insert(i, i * 2);
-    }
+fn intern3(b: &mut Bencher) {
+    let m = intern_map();
 
     pin(|pin| {
         b.iter(|| {
             let m2 = m.read(pin).clone(|k| m.map_hash_key(&k.0));
-            for i in 0..1000 {
-                let mut result = intern_slow_value(&m2, i, i * 2, pin);
+            for i in 0..50000 {
+                let mut result = intern3_value(&m2, i, i * 2, pin);
                 black_box(&mut result);
             }
         })
@@ -60,16 +73,17 @@ fn intern_slow(b: &mut Bencher) {
 
 #[inline(never)]
 fn intern_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-    let p = match table.read(pin).get_potential(k, |v| v.0 == k) {
+    let hash = table.make_hash(&k);
+    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
         Err(p) => p,
     };
 
     let mut write = table.lock();
-    match p.get(write.read(), k, |v| v.0 == k) {
+    match p.get(write.read(), hash, |v| v.0 == k) {
         Some(v) => v.1,
         None => {
-            p.insert_new(&mut write, k, (k, v), |v| v.0);
+            p.insert_new(&mut write, hash, (k, v), |v| v.0);
             v
         }
     }
@@ -77,16 +91,46 @@ fn intern_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) 
 
 #[bench]
 fn intern(b: &mut Bencher) {
-    let m = SyncInsertTable::new();
-    for i in (0..1000).step_by(2) {
-        m.map_insert(i, i * 2);
-    }
+    let m = intern_map();
 
     pin(|pin| {
         b.iter(|| {
             let m2 = m.read(pin).clone(|k| m.map_hash_key(&k.0));
-            for i in 0..1000 {
+            for i in 0..50000 {
                 let mut result = intern_value(&m2, i, i * 2, pin);
+                black_box(&mut result);
+            }
+        })
+    })
+}
+
+#[inline(never)]
+fn intern2_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+    let hash = table.make_hash(&k);
+    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+        Ok(v) => return v.1,
+        Err(p) => p,
+    };
+
+    let mut write = table.lock();
+    match p.get(write.read(), hash, |v| v.0 == k) {
+        Some(v) => v.1,
+        None => {
+            p.try_insert_new(&mut write, hash, (k, v));
+            v
+        }
+    }
+}
+
+#[bench]
+fn intern2(b: &mut Bencher) {
+    let m = intern_map();
+
+    pin(|pin| {
+        b.iter(|| {
+            let m2 = m.read(pin).clone(|k| m.map_hash_key(&k.0));
+            for i in 0..50000 {
+                let mut result = intern2_value(&m2, i, i * 2, pin);
                 black_box(&mut result);
             }
         })
