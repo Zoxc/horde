@@ -14,17 +14,6 @@ use concurrent::{
 };
 use test::{black_box, Bencher};
 
-#[bench]
-fn insert(b: &mut Bencher) {
-    b.iter(|| {
-        let mut m = SyncInsertTable::new();
-        for i in (0..1000).step_by(4) {
-            m.map_insert(i, i * 2);
-        }
-        black_box(&mut m);
-    })
-}
-
 fn intern_map() -> SyncInsertTable<(u64, u64)> {
     let m = SyncInsertTable::new();
     for i in 0..50000 {
@@ -134,5 +123,67 @@ fn intern2(b: &mut Bencher) {
                 black_box(&mut result);
             }
         })
+    })
+}
+
+#[bench]
+fn insert(b: &mut Bencher) {
+    #[inline(never)]
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+        m.map_insert(i, i * 2);
+    }
+
+    b.iter(|| {
+        let mut m = SyncInsertTable::new();
+        for i in (0..20000i32).step_by(4) {
+            iter(&m, i);
+        }
+        black_box(&mut m);
+    })
+}
+
+#[bench]
+fn insert_with_potential(b: &mut Bencher) {
+    #[inline(never)]
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+        let hash = m.hash(&i);
+        let mut write = m.lock();
+        match write.read().get_potential(hash, |&(k, _)| k == i) {
+            Ok(_) => (),
+            Err(p) => {
+                p.insert_new(&mut write, hash, (i, i * 2), SyncInsertTable::hasher);
+            }
+        };
+    }
+
+    b.iter(|| {
+        let mut m = SyncInsertTable::new();
+        for i in (0..20000i32).step_by(4) {
+            iter(&m, i);
+        }
+        black_box(&mut m);
+    })
+}
+
+#[bench]
+fn insert_regular(b: &mut Bencher) {
+    #[inline(never)]
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+        let hash = m.hash(&i);
+        let mut write = m.lock();
+        match write.read().get(hash, |&(k, _)| k == i) {
+            Some(_) => (),
+            None => {
+                write.insert_new(hash, (i, i * 2), SyncInsertTable::hasher);
+            }
+        };
+    }
+
+    b.iter(|| {
+        let mut m = SyncInsertTable::new();
+        for i in (0..20000i32).step_by(4) {
+            iter(&m, i);
+        }
+        black_box(&mut m);
     })
 }

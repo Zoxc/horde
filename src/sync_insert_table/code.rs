@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::qsbr::Pin;
 
-use super::{PotentialSlot, Read, SyncInsertTable, TableRef};
+use super::{PotentialSlot, Read, SyncInsertTable, TableRef, Write};
 
 #[no_mangle]
 unsafe fn bucket_index(t: TableRef<usize>, i: usize) -> *mut usize {
@@ -45,6 +45,22 @@ fn potential_get_test(potential: PotentialSlot, table: Read<'_, usize>) -> Optio
 }
 
 #[no_mangle]
+fn potential_insert(potential: PotentialSlot, mut table: Write<'_, usize>) {
+    potential.insert_new(&mut table, 5, 5, |_, h| *h as u64);
+}
+
+#[no_mangle]
+unsafe fn potential_insert_opt(mut table: Write<'_, usize>, index: usize) {
+    let potential = PotentialSlot {
+        bucket_mask: (*(table.table.current.as_ptr() as *const TableRef<usize>))
+            .info()
+            .bucket_mask,
+        index,
+    };
+    potential.insert_new(&mut table, 5, 5, |_, h| *h as u64);
+}
+
+#[no_mangle]
 fn find_test(table: &SyncInsertTable<usize>) -> Option<usize> {
     unsafe { table.find(5, |a| *a == 5).map(|b| *b.as_ref()) }
 }
@@ -72,4 +88,58 @@ unsafe fn insert_slot_test(table: TableRef<usize>, hash: u64) -> usize {
 #[no_mangle]
 fn find_test2(table: &HashMap<usize, ()>) -> Option<usize> {
     table.get_key_value(&5).map(|b| *b.0)
+}
+
+#[no_mangle]
+fn intern_triple_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+    let hash = table.hash(&k);
+    match table.read(pin).get(hash, |v| v.0 == k) {
+        Some(v) => return v.1,
+        None => (),
+    };
+
+    let mut write = table.lock();
+    match write.read().get(hash, |v| v.0 == k) {
+        Some(v) => v.1,
+        None => {
+            write.insert_new(hash, (k, v), SyncInsertTable::hasher);
+            v
+        }
+    }
+}
+
+#[no_mangle]
+fn intern_try_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+    let hash = table.hash(&k);
+    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+        Ok(v) => return v.1,
+        Err(p) => p,
+    };
+
+    let mut write = table.lock();
+    match p.get(write.read(), hash, |v| v.0 == k) {
+        Some(v) => v.1,
+        None => {
+            p.try_insert_new(&mut write, hash, (k, v));
+            v
+        }
+    }
+}
+
+#[no_mangle]
+fn intern_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+    let hash = table.hash(&k);
+    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+        Ok(v) => return v.1,
+        Err(p) => p,
+    };
+
+    let mut write = table.lock();
+    match p.get(write.read(), hash, |v| v.0 == k) {
+        Some(v) => v.1,
+        None => {
+            p.insert_new(&mut write, hash, (k, v), SyncInsertTable::hasher);
+            v
+        }
+    }
 }
