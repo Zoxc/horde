@@ -148,6 +148,30 @@ fn insert(b: &mut Bencher) {
 }
 
 #[bench]
+fn insert_with_try_potential(b: &mut Bencher) {
+    #[inline(never)]
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+        let hash = m.hash_any(&i);
+        let mut write = m.lock();
+        write.reserve_one(SyncInsertTable::hasher);
+        match write.read().get_potential(hash, |&(k, _)| k == i) {
+            Ok(_) => (),
+            Err(p) => {
+                p.try_insert_new(&mut write, hash, (i, i * 2));
+            }
+        };
+    }
+
+    b.iter(|| {
+        let mut m = SyncInsertTable::new();
+        for i in (0..20000i32).step_by(4) {
+            iter(&m, i);
+        }
+        black_box(&mut m);
+    })
+}
+
+#[bench]
 fn insert_with_potential(b: &mut Bencher) {
     #[inline(never)]
     fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {

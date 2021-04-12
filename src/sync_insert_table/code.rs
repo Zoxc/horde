@@ -145,8 +145,13 @@ fn intern_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -
 }
 
 #[no_mangle]
-fn intern_refresh_test(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
-    let hash = table.hash_any(&k);
+fn intern_refresh_test(
+    table: &SyncInsertTable<(u64, u64)>,
+    k: u64,
+    v: u64,
+    hash: u64,
+    pin: &Pin,
+) -> u64 {
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
         Err(p) => p,

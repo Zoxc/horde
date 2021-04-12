@@ -1,9 +1,6 @@
 use crate::{
     qsbr::{pin, Pin},
-    raw::{
-        bitmask::{BitMask, BitMaskIter},
-        imp::Group,
-    },
+    raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{cold_path, equivalent_key, make_hash, make_hasher, make_insert_hash},
 };
@@ -419,18 +416,6 @@ impl<T> TableRef<T> {
         }
     }
 
-    /// Returns an iterator over occupied buckets that could match a given hash.
-    ///
-    /// In rare cases, the iterator may return a bucket with a different hash.
-    ///
-    /// It is up to the caller to ensure that the `SyncInsertTable` outlives the
-    /// `RawIterHash`. Because we cannot make the `next` method unsafe on the
-    /// `RawIterHash` struct, we have to make the `iter_hash` method unsafe.
-    #[inline]
-    pub unsafe fn iter_hash(&self, hash: u64) -> RawIterHash<'_, T> {
-        RawIterHash::new(*self, self.info(), hash)
-    }
-
     /// Returns an iterator over every element in the table. It is up to
     /// the caller to ensure that the `SyncInsertTable` outlives the `RawIter`.
     /// Because we cannot make the `next` method unsafe on the `RawIter`
@@ -448,23 +433,12 @@ impl<T> TableRef<T> {
 
     /// Searches for an element in the table.
     #[inline]
-    unsafe fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
-        for bucket in self.iter_hash(hash) {
-            let elm = bucket.as_ref();
-            if likely(eq(elm)) {
-                return Some(bucket);
-            }
-        }
-        None
-    }
-
-    /// Searches for an element in the table.
-    #[inline]
-    unsafe fn find_potential(
+    unsafe fn search<R>(
         &self,
         hash: u64,
         mut eq: impl FnMut(&T) -> bool,
-    ) -> Result<Bucket<T>, PotentialSlot> {
+        mut stop: impl FnMut(&Group, &ProbeSeq) -> Option<R>,
+    ) -> Result<Bucket<T>, R> {
         let h2_hash = h2(hash);
         let mut probe_seq = self.info().probe_seq(hash);
         let mut group = Group::load(self.info().ctrl(probe_seq.pos));
@@ -479,21 +453,53 @@ impl<T> TableRef<T> {
                 if likely(eq(elm)) {
                     return Ok(bucket);
                 }
+
+                // Look at the next bit
+                continue;
             }
 
-            let bit = group.match_empty().lowest_set_bit();
-            if likely(bit.is_some()) {
-                let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
-                return Err(PotentialSlot {
-                    index: index,
-                    bucket_mask: self.info().bucket_mask,
-                });
+            if let Some(stop) = stop(&group, &probe_seq) {
+                return Err(stop);
             }
 
             probe_seq.move_next(self.info().bucket_mask);
             group = Group::load(self.info().ctrl(probe_seq.pos));
             bitmask = group.match_byte(h2_hash).into_iter();
         }
+    }
+
+    /// Searches for an element in the table.
+    #[inline]
+    unsafe fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+        self.search(hash, eq, |group, _| {
+            if likely(group.match_empty().any_bit_set()) {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .ok()
+    }
+
+    /// Searches for an element in the table.
+    #[inline]
+    unsafe fn find_potential(
+        &self,
+        hash: u64,
+        eq: impl FnMut(&T) -> bool,
+    ) -> Result<Bucket<T>, PotentialSlot> {
+        self.search(hash, eq, |group, probe_seq| {
+            let bit = group.match_empty().lowest_set_bit();
+            if likely(bit.is_some()) {
+                let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
+                return Some(PotentialSlot {
+                    index: index,
+                    bucket_mask: self.info().bucket_mask,
+                });
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -1253,97 +1259,6 @@ impl ProbeSeq {
         self.stride += Group::WIDTH;
         self.pos += self.stride;
         self.pos &= bucket_mask;
-    }
-}
-
-/// Iterator over occupied buckets that could match a given hash.
-///
-/// In rare cases, the iterator may return a bucket with a different hash.
-struct RawIterHash<'a, T> {
-    table: TableRef<T>,
-    inner: RawIterHashInner<'a>,
-    _marker: PhantomData<T>,
-}
-
-struct RawIterHashInner<'a> {
-    table: &'a TableInfo,
-
-    // The top 7 bits of the hash.
-    h2_hash: u8,
-
-    // The sequence of groups to probe in the search.
-    probe_seq: ProbeSeq,
-
-    group: Group,
-
-    // The elements within the group with a matching h2-hash.
-    bitmask: BitMaskIter,
-}
-
-impl<'a, T> RawIterHash<'a, T> {
-    #[inline]
-    fn new(table: TableRef<T>, info: &'a TableInfo, hash: u64) -> Self {
-        RawIterHash {
-            table,
-            inner: RawIterHashInner::new(info, hash),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a> RawIterHashInner<'a> {
-    #[inline]
-    fn new(table: &'a TableInfo, hash: u64) -> Self {
-        unsafe {
-            let h2_hash = h2(hash);
-            let probe_seq = table.probe_seq(hash);
-            let group = Group::load(table.ctrl(probe_seq.pos));
-            let bitmask = group.match_byte(h2_hash).into_iter();
-
-            RawIterHashInner {
-                table,
-                h2_hash,
-                probe_seq,
-                group,
-                bitmask,
-            }
-        }
-    }
-}
-
-impl<'a, T> Iterator for RawIterHash<'a, T> {
-    type Item = Bucket<T>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Bucket<T>> {
-        unsafe {
-            match self.inner.next() {
-                Some(index) => Some(self.table.bucket(index)),
-                None => None,
-            }
-        }
-    }
-}
-
-impl<'a> Iterator for RawIterHashInner<'a> {
-    type Item = usize;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            loop {
-                if let Some(bit) = self.bitmask.next() {
-                    let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
-                    return Some(index);
-                }
-                if likely(self.group.match_empty().any_bit_set()) {
-                    return None;
-                }
-                self.probe_seq.move_next(self.table.bucket_mask);
-                self.group = Group::load(self.table.ctrl(self.probe_seq.pos));
-                self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
-            }
-        }
     }
 }
 
