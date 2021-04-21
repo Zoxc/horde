@@ -1,7 +1,6 @@
 use crate::collect;
-use crossbeam_epoch::Guard;
 
-use super::{Init, Pin};
+use super::Pin;
 
 #[inline(never)]
 #[no_mangle]
@@ -14,21 +13,6 @@ unsafe fn dummy() {
 #[no_mangle]
 unsafe fn pin_test() {
     collect::pin(|_| dummy());
-}
-
-#[no_mangle]
-unsafe fn init_new_test() -> Init {
-    Init::new()
-}
-
-#[no_mangle]
-unsafe fn init_pin_test(init: Init) {
-    init.pin(|_| dummy());
-}
-
-#[no_mangle]
-unsafe fn pin_guard(pin: &Pin) -> &Guard {
-    pin.guard()
 }
 
 #[no_mangle]

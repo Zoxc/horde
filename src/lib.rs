@@ -13,7 +13,8 @@
     maybe_uninit_array_assume_init,
     thread_local,
     negative_impls,
-    llvm_asm
+    llvm_asm,
+    once_cell
 )]
 
 extern crate alloc;
