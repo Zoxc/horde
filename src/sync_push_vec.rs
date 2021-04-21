@@ -225,6 +225,9 @@ struct DestroyTable<T> {
     lock: Mutex<bool>,
 }
 
+unsafe impl<T> Sync for DestroyTable<T> {}
+unsafe impl<T: Send> Send for DestroyTable<T> {}
+
 impl<T> DestroyTable<T> {
     unsafe fn run(&self) {
         let mut status = self.lock.lock();
@@ -392,7 +395,7 @@ impl<'a, T> Write<'a, T> {
     }
 }
 
-impl<'a, T: Clone> Write<'a, T> {
+impl<'a, T: Send + Clone> Write<'a, T> {
     /// Inserts a new element into the end of the table, and returns a refernce to it along
     /// with its index.
     #[inline]
@@ -472,7 +475,7 @@ impl<'a, T: Clone> Write<'a, T> {
     }
 }
 
-impl<T: Clone> FromIterator<T> for SyncPushVec<T> {
+impl<T: Clone + Send> FromIterator<T> for SyncPushVec<T> {
     #[inline]
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let iter = iter.into_iter();

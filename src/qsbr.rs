@@ -49,9 +49,11 @@ impl Pin {
         unsafe { (*data).guard.as_ref().unwrap() }
     }
 
+    // FIXME: Prevent pin calls inside the callback?
     pub unsafe fn defer_unchecked<F, R>(&self, f: F)
     where
         F: FnOnce() -> R,
+        F: Send,
     {
         DEFERRED
             .fetch_update(Ordering::Acquire, Ordering::Relaxed, |current| {

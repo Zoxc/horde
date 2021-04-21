@@ -551,6 +551,9 @@ struct DestroyTable<T> {
     lock: Mutex<bool>,
 }
 
+unsafe impl<T> Sync for DestroyTable<T> {}
+unsafe impl<T: Send> Send for DestroyTable<T> {}
+
 impl<T> DestroyTable<T> {
     unsafe fn run(&self) {
         let mut status = self.lock.lock();
@@ -813,7 +816,7 @@ impl<'a, T, S> Write<'a, T, S> {
     }
 }
 
-impl<'a, T: Clone, S> Write<'a, T, S> {
+impl<'a, T: Send + Clone, S> Write<'a, T, S> {
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
@@ -898,7 +901,7 @@ impl<'a, T: Clone, S> Write<'a, T, S> {
     }
 }
 
-impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Write<'_, (K, V), S> {
+impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K, V), S> {
     #[inline]
     pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
         let table = self.table.current.load();
@@ -918,7 +921,9 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Write<'_, (K, V), S> {
     }
 }
 
-impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher + Default> SyncInsertTable<(K, V), S> {
+impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
+    SyncInsertTable<(K, V), S>
+{
     #[inline]
     pub fn map_from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
@@ -961,7 +966,7 @@ impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
     }
 }
 
-impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
+impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> SyncInsertTable<(K, V), S> {
     #[inline]
     pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
         let hash = make_insert_hash(&self.hash_builder, &k);
@@ -1033,7 +1038,7 @@ impl PotentialSlot {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new<'a, T: Clone, S>(
+    pub fn insert_new<'a, T: Send + Clone, S>(
         &self,
         table: &mut Write<'a, T, S>,
         hash: u64,
