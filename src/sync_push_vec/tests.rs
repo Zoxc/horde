@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::qsbr::release;
+use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 
 #[test]

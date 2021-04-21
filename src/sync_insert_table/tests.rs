@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use super::SyncInsertTable;
-use crate::qsbr::release;
-use crate::qsbr::{pin, Pin};
+use crate::collect::release;
+use crate::collect::{pin, Pin};
 use std::{
     collections::{
         hash_map::{DefaultHasher, RandomState},

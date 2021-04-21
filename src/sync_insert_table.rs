@@ -1,5 +1,5 @@
 use crate::{
-    qsbr::{pin, Pin},
+    collect::{pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{cold_path, equivalent_key, make_hash, make_hasher, make_insert_hash},

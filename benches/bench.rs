@@ -9,7 +9,7 @@ extern crate test;
 use std::hash::Hasher;
 
 use concurrent::{
-    qsbr::{pin, Pin},
+    collect::{pin, Pin},
     sync_insert_table::SyncInsertTable,
 };
 use test::{black_box, Bencher};

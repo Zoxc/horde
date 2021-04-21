@@ -21,7 +21,7 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
-pub mod qsbr;
+pub mod collect;
 mod raw;
 mod scopeguard;
 mod util;

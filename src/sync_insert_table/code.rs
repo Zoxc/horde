@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::qsbr::Pin;
+use crate::collect::Pin;
 
 use super::{PotentialSlot, Read, SyncInsertTable, TableRef, Write};
 

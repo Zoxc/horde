@@ -1,5 +1,5 @@
 use crate::{
-    qsbr::{pin, Pin},
+    collect::{pin, Pin},
     scopeguard::guard,
 };
 use core::ptr::NonNull;

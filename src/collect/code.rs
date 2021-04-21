@@ -1,4 +1,4 @@
-use crate::qsbr;
+use crate::collect;
 use crossbeam_epoch::Guard;
 
 use super::{Init, Pin};
@@ -13,7 +13,7 @@ unsafe fn dummy() {
 
 #[no_mangle]
 unsafe fn pin_test() {
-    qsbr::pin(|_| dummy());
+    collect::pin(|_| dummy());
 }
 
 #[no_mangle]
@@ -33,10 +33,10 @@ unsafe fn pin_guard(pin: &Pin) -> &Guard {
 
 #[no_mangle]
 unsafe fn collect_test() {
-    qsbr::collect();
+    collect::collect();
 }
 
 #[no_mangle]
 unsafe fn release_test() {
-    qsbr::release();
+    collect::release();
 }
