@@ -28,7 +28,7 @@ fn intern_map() -> SyncInsertTable<(u64, u64)> {
 }
 
 #[inline(never)]
-fn intern3_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+fn intern3_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     match table.read(pin).get(hash, |v| v.0 == k) {
         Some(v) => return v.1,
@@ -61,7 +61,7 @@ fn intern3(b: &mut Bencher) {
 }
 
 #[inline(never)]
-fn intern_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+fn intern_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
@@ -94,7 +94,7 @@ fn intern(b: &mut Bencher) {
 }
 
 #[inline(never)]
-fn intern4_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: &Pin) -> u64 {
+fn intern4_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
