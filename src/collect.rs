@@ -23,6 +23,9 @@ pub struct Pin<'a> {
     _private: PhantomData<&'a ()>,
 }
 
+impl !Send for Pin<'_> {}
+impl !Sync for Pin<'_> {}
+
 impl Pin<'_> {
     // FIXME: Prevent pin calls inside the callback?
     pub unsafe fn defer_unchecked<F>(&self, f: F)

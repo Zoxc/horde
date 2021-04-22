@@ -1,23 +1,15 @@
 #![feature(
     alloc_layout_extra,
-    option_result_unwrap_unchecked,
+    allocator_api,
     asm,
-    test,
     core_intrinsics,
     dropck_eyepatch,
-    min_specialization,
-    extend_one,
-    allocator_api,
-    slice_ptr_get,
-    nonnull_slice_from_raw_parts,
-    maybe_uninit_array_assume_init,
-    thread_local,
-    negative_impls,
     llvm_asm,
-    once_cell
+    negative_impls,
+    once_cell,
+    option_result_unwrap_unchecked,
+    thread_local
 )]
-
-extern crate alloc;
 
 #[macro_use]
 mod macros;
