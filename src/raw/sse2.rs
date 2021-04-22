@@ -46,15 +46,11 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
-        let mut result: x86::__m128i;
+        let mut result = x86::_mm_loadu_si128(ptr.cast());
 
-        llvm_asm!(
-            "movdqu $1, $0"
-            : "=x"(result)
-            : "*m"(ptr)
-            : "memory"
-            : "volatile"
-        );
+        // Hide the `result` value since we need the backend to assume it could be the hardware
+        // instruction `movdqu` which has Ordering::Acquire semantics.
+        asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
 
         Group(result)
     }
@@ -69,15 +65,11 @@ impl Group {
         // FIXME: use align_offset once it stabilizes
         debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
 
-        let mut result: x86::__m128i;
+        let mut result = x86::_mm_load_si128(ptr.cast());
 
-        llvm_asm!(
-            "movdqa $1, $0"
-            : "=x"(result)
-            : "*m"(ptr)
-            : "memory"
-            : "volatile"
-        );
+        // Hide the `result` value since we need the backend to assume it could be the hardware
+        // instruction `movdqa` which has Ordering::Acquire semantics.
+        asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
 
         Group(result)
     }
