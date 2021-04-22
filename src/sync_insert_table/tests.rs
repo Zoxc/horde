@@ -1,13 +1,12 @@
 #![cfg(test)]
 
 use super::SyncInsertTable;
+use crate::collect::pin;
 use crate::collect::release;
-use crate::collect::{pin, Pin};
+use crate::collect::Pin;
+use std::collections::hash_map::RandomState;
 use std::{
-    collections::{
-        hash_map::{DefaultHasher, RandomState},
-        HashMap,
-    },
+    collections::{hash_map::DefaultHasher, HashMap},
     hash::Hasher,
 };
 
@@ -171,7 +170,7 @@ fn rehash() {
     release();
 }
 
-const INTERN_SIZE: u64 = 26334;
+const INTERN_SIZE: u64 = if cfg!(miri) { 35 } else { 26334 };
 const HIT_RATE: u64 = 84;
 
 fn assert_equal(a: &mut SyncInsertTable<(u64, u64)>, b: &HashMap<u64, u64>) {

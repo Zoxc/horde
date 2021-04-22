@@ -331,8 +331,8 @@ impl<T> TableRef<T> {
         let info = Layout::new::<TableInfo>();
         let control =
             Layout::array::<u8>(bucket_count + Group::WIDTH)?.align_to(mem::align_of::<Group>())?;
-        let (total, info_offet) = buckets.extend(info)?;
-        Ok((total.extend(control)?.0, info_offet))
+        let (total, info_offset) = buckets.extend(info)?;
+        Ok((total.extend(control)?.0, info_offset))
     }
 
     #[inline]
@@ -400,8 +400,8 @@ impl<T> TableRef<T> {
             .0;
         let buckets_size = buckets.size();
         let info = Layout::new::<TableInfo>();
-        let info_offet = buckets.extend(info).unwrap_unchecked().1;
-        let info_padding = info_offet - buckets_size;
+        let info_offset = buckets.extend(info).unwrap_unchecked().1;
+        let info_padding = info_offset - buckets_size;
         (self.data.as_ptr() as *const u8).sub(info_padding) as *mut T
     }
 
