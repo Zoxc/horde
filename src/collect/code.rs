@@ -1,7 +1,5 @@
 use crate::collect;
 
-use super::Pin;
-
 #[inline(never)]
 #[no_mangle]
 unsafe fn dummy() {

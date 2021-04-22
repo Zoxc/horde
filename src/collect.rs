@@ -153,6 +153,7 @@ static COLLECTOR: SyncLazy<Mutex<Collector>> = SyncLazy::new(|| Mutex::new(Colle
 type Callbacks = Vec<Box<dyn FnOnce() + Send>>;
 
 struct Collector {
+    pending: bool,
     busy_count: usize,
     threads: HashMap<ThreadId, bool>,
     current_deferred: Callbacks,
@@ -162,6 +163,7 @@ struct Collector {
 impl Collector {
     fn new() -> Self {
         Self {
+            pending: false,
             busy_count: 0,
             threads: HashMap::new(),
             current_deferred: Vec::new(),
@@ -183,8 +185,13 @@ impl Collector {
         if *self.threads.get(&thread).unwrap() {
             self.busy_count -= 1;
 
-            if self.busy_count == 0 {
-                // NOTIFY OTHER THREADS THAT THERE COULD BE THINGS TO COLLECT
+            if self.busy_count == 0
+                && (!self.previous_deferred.is_empty() || !self.current_deferred.is_empty())
+            {
+                // Don't collect garbage here, but let the other threads know that there's
+                // garbage to be collected.
+                self.pending = true;
+                DEFERRED.fetch_add(1, Ordering::Release);
             }
         }
 
@@ -193,11 +200,15 @@ impl Collector {
 
     fn quiet(&mut self) -> Option<Callbacks> {
         let quiet = self.threads.get_mut(&thread::current().id()).unwrap();
-        if !*quiet {
-            self.busy_count -= 1;
-            *quiet = true;
+        if !*quiet || self.pending {
+            if !*quiet {
+                self.busy_count -= 1;
+                *quiet = true;
+            }
+
             if self.busy_count == 0 {
                 // All threads are quiet
+                self.pending = false;
 
                 self.busy_count = self.threads.len();
                 self.threads.values_mut().for_each(|value| {
