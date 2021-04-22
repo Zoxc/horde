@@ -636,7 +636,7 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 
     #[inline]
-    pub fn read<'a>(&'a self, _pin: &'a Pin) -> Read<'a, T, S> {
+    pub fn read<'a>(&'a self, _pin: Pin<'a>) -> Read<'a, T, S> {
         Read { table: self }
     }
 

@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     intrinsics::unlikely,
     lazy::SyncLazy,
+    marker::PhantomData,
     mem,
     sync::atomic::{AtomicUsize, Ordering},
     thread::{self, ThreadId},
@@ -12,17 +13,17 @@ use std::{
 
 mod code;
 
-// TODO: Make the &'a Pin into a ZST Pin<'a>.
 // TODO: Use a reference count of pins and a PinRef ZST with a destructor that drops the reference
 // so a closure with the `pin` function isn't required.
 
 static DEFERRED: AtomicUsize = AtomicUsize::new(0);
 
-pub struct Pin {
-    _private: (),
+#[derive(Clone, Copy)]
+pub struct Pin<'a> {
+    _private: PhantomData<&'a ()>,
 }
 
-impl Pin {
+impl Pin<'_> {
     // FIXME: Prevent pin calls inside the callback?
     pub unsafe fn defer_unchecked<F>(&self, f: F)
     where
@@ -117,12 +118,14 @@ fn data_init() -> *const Data {
 }
 
 #[inline]
-pub fn pin<R>(f: impl FnOnce(&Pin) -> R) -> R {
+pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
     let data = unsafe { &*(hide(data_init())) };
     let old_pinned = data.pinned.get();
     data.pinned.set(true);
     guard(old_pinned, |pin| data.pinned.set(*pin));
-    f(&Pin { _private: () })
+    f(Pin {
+        _private: PhantomData,
+    })
 }
 
 pub fn release() {

@@ -302,7 +302,7 @@ impl<T> SyncPushVec<T> {
     }
 
     #[inline]
-    pub fn read<'a>(&'a self, _pin: &'a Pin) -> Read<'a, T> {
+    pub fn read<'a>(&'a self, _pin: Pin<'a>) -> Read<'a, T> {
         Read { table: self }
     }
 
