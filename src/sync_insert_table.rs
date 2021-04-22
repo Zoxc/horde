@@ -6,8 +6,7 @@ use crate::{
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
-use rustc_hash::FxHasher;
-use std::sync::Arc;
+use std::ops::DerefMut;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
@@ -20,8 +19,9 @@ use std::{
     sync::atomic::{AtomicU8, Ordering},
 };
 use std::{borrow::Borrow, hash::Hash};
-use std::{hash::BuildHasherDefault, ops::DerefMut};
+use std::{collections::hash_map::RandomState, sync::Arc};
 use std::{ops::Deref, sync::atomic::AtomicPtr};
+
 mod code;
 mod tests;
 
@@ -123,7 +123,7 @@ impl<'a, T, S> DerefMut for LockedWrite<'a, T, S> {
     }
 }
 
-pub type DefaultHashBuilder = BuildHasherDefault<FxHasher>;
+pub type DefaultHashBuilder = RandomState;
 
 /// A raw hash table with an unsafe API.
 pub struct SyncInsertTable<T, S = DefaultHashBuilder> {

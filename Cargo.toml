@@ -7,7 +7,6 @@ edition = "2018"
 crate-type = ["rlib", "dylib"]
 
 [dependencies]
-rustc-hash = "1.1.0"
 parking_lot = "0.11.1"
 
 [profile.bench]
