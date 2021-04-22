@@ -1,3 +1,5 @@
+//! An API for quiescent state based reclamation.
+
 use crate::{scopeguard::guard, util::cold_path};
 use parking_lot::Mutex;
 use std::{
@@ -18,6 +20,8 @@ mod code;
 
 static DEFERRED: AtomicUsize = AtomicUsize::new(0);
 
+/// Represents a proof that the current thread is pinned for the lifetime `'a`.
+/// It can be used to access data structures in a lock-free manner.
 #[derive(Clone, Copy)]
 pub struct Pin<'a> {
     _private: PhantomData<&'a ()>,
@@ -120,6 +124,11 @@ fn data_init() -> *const Data {
     data
 }
 
+/// Marks the current thread as pinned and returns a proof of that to the closure.
+///
+/// This adds the current thread to the set of threads that needs to regularly call [collect]
+/// before memory can be freed. [release] can be called if a thread no longer needs
+/// access to lock-free data structures for an extended period of time.
 #[inline]
 pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
     let data = unsafe { &*(hide(data_init())) };
@@ -131,6 +140,14 @@ pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
     })
 }
 
+/// Removes the current thread from the threads allowed to access lock-free data structures.
+/// This allows memory to be freed without waiting for [collect] calls from the current thread.
+/// [pin] can be called to after to continue accessing lock-free data structures.
+///
+/// This will not free any garbage so [collect] should be called first before the last thread
+/// terminates to avoid memory leaks.
+///
+/// This will panic if called while the current thread is pinned.
 pub fn release() {
     let data = unsafe { &*(hide(data())) };
     data.assert_unpinned();
@@ -140,6 +157,9 @@ pub fn release() {
     }
 }
 
+/// Signals a quiescent state where garbage may be collected.
+///
+/// This will panic if called while a thread is pinned.
 pub fn collect() {
     let data = unsafe { &*(hide(data())) };
     data.assert_unpinned();
