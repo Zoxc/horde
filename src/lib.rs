@@ -1,5 +1,5 @@
-//! This crate contains [sync_insert_table::SyncInsertTable] and [sync_push_vec::SyncPushVec] which offers lock-free reads and uses
-//! quiescent state based reclamation for which in API is available in the [collect] module.
+//! This crate contains [SyncInsertTable] and [SyncPushVec] which offers lock-free reads and uses
+//! quiescent state based reclamation for which an API is available in the [collect] module.
 
 #![feature(
     alloc_layout_extra,

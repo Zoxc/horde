@@ -32,6 +32,14 @@ impl !Sync for Pin<'_> {}
 
 impl Pin<'_> {
     // FIXME: Prevent pin calls inside the callback?
+    /// This schedules a closure to run at some point after all threads are outside their current pinned
+    /// regions.
+    ///
+    /// The closure will be called by the [collect] method.
+    ///
+    /// This method is unsafe since the closure is not required to be `'static`.
+    /// It's up to the caller to ensure the closure does not access freed memory.
+    /// A `move` closure is recommended to avoid accidental references to stack variables.
     pub unsafe fn defer_unchecked<F>(&self, f: F)
     where
         F: FnOnce(),
@@ -141,6 +149,7 @@ pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
 }
 
 /// Removes the current thread from the threads allowed to access lock-free data structures.
+///
 /// This allows memory to be freed without waiting for [collect] calls from the current thread.
 /// [pin] can be called to after to continue accessing lock-free data structures.
 ///
@@ -158,6 +167,8 @@ pub fn release() {
 }
 
 /// Signals a quiescent state where garbage may be collected.
+///
+/// This may collect garbage using the callbacks registered in [Pin::defer_unchecked](struct.Pin.html#method.defer_unchecked).
 ///
 /// This will panic if called while a thread is pinned.
 pub fn collect() {
