@@ -388,12 +388,12 @@ impl<T> TableRef<T> {
     }
 
     #[inline]
-    pub unsafe fn bucket_before_first(&self) -> *mut T {
+    unsafe fn bucket_before_first(&self) -> *mut T {
         self.bucket_past_last().sub(self.info().buckets())
     }
 
     #[inline]
-    pub unsafe fn bucket_past_last(&self) -> *mut T {
+    unsafe fn bucket_past_last(&self) -> *mut T {
         let buckets = Layout::new::<T>()
             .repeat(self.info().buckets())
             .unwrap_unchecked()
@@ -407,7 +407,7 @@ impl<T> TableRef<T> {
 
     /// Returns a pointer to an element in the table.
     #[inline]
-    pub unsafe fn bucket(&self, index: usize) -> Bucket<T> {
+    unsafe fn bucket(&self, index: usize) -> Bucket<T> {
         debug_assert!(index < self.info().buckets());
 
         Bucket {
@@ -420,7 +420,7 @@ impl<T> TableRef<T> {
     /// Because we cannot make the `next` method unsafe on the `RawIter`
     /// struct, we have to make the `iter` method unsafe.
     #[inline]
-    pub unsafe fn iter(&self) -> RawIter<T> {
+    unsafe fn iter(&self) -> RawIter<T> {
         let data = Bucket {
             ptr: NonNull::new_unchecked(self.bucket_past_last()),
         };
