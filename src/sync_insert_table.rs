@@ -5,10 +5,8 @@ use crate::{
     util::{cold_path, equivalent_key, make_hash, make_hasher, make_insert_hash},
 };
 use core::ptr::NonNull;
-use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
 use rustc_hash::FxHasher;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
@@ -23,6 +21,7 @@ use std::{
 };
 use std::{borrow::Borrow, hash::Hash};
 use std::{hash::BuildHasherDefault, ops::DerefMut};
+use std::{ops::Deref, sync::atomic::AtomicPtr};
 mod code;
 mod tests;
 
@@ -130,7 +129,7 @@ pub type DefaultHashBuilder = BuildHasherDefault<FxHasher>;
 pub struct SyncInsertTable<T, S = DefaultHashBuilder> {
     hash_builder: S,
 
-    current: AtomicCell<TableRef<T>>,
+    current: AtomicPtr<TableInfo>,
 
     lock: Mutex<()>,
 
@@ -568,7 +567,7 @@ unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
-            self.current.load().free();
+            self.current().free();
             for table in self.old.get_mut() {
                 table.run();
             }
@@ -598,11 +597,17 @@ impl<T, S> SyncInsertTable<T, S> {
     pub fn new_with(hash_builder: S, capacity: usize) -> Self {
         Self {
             hash_builder,
-            current: AtomicCell::new(if capacity > 0 {
-                TableRef::allocate(capacity_to_buckets(capacity).expect("capacity overflow"))
-            } else {
-                TableRef::empty()
-            }),
+            current: AtomicPtr::new(
+                if capacity > 0 {
+                    TableRef::<T>::allocate(
+                        capacity_to_buckets(capacity).expect("capacity overflow"),
+                    )
+                } else {
+                    TableRef::empty()
+                }
+                .data
+                .as_ptr(),
+            ),
             old: UnsafeCell::new(Vec::new()),
             marker: PhantomData,
             lock: Mutex::new(()),
@@ -612,7 +617,7 @@ impl<T, S> SyncInsertTable<T, S> {
     /// Searches for an element in the table.
     #[inline]
     fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
-        unsafe { self.current.load().find(hash, eq) }
+        unsafe { self.current().find(hash, eq) }
     }
 
     /// Gets a mutable reference to an element in the table.
@@ -672,6 +677,14 @@ impl<T, S> SyncInsertTable<T, S> {
             _guard: guard,
         }
     }
+
+    #[inline]
+    fn current(&self) -> TableRef<T> {
+        TableRef {
+            data: unsafe { NonNull::new_unchecked(self.current.load(Ordering::Acquire)) },
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<T, S: BuildHasher> SyncInsertTable<T, S> {
@@ -704,7 +717,7 @@ impl<'a, T, S> Read<'a, T, S> {
         eq: impl FnMut(&T) -> bool,
     ) -> Result<&'a T, PotentialSlot> {
         // Avoid `Option::map` because it bloats LLVM IR.
-        match unsafe { self.table.current.load().find_potential(hash, eq) } {
+        match unsafe { self.table.current().find_potential(hash, eq) } {
             Ok(bucket) => Ok(unsafe { bucket.as_ref() }),
             Err(slot) => Err(slot),
         }
@@ -727,7 +740,7 @@ impl<'a, T, S> Read<'a, T, S> {
     #[inline]
     pub fn capacity(&self) -> usize {
         unsafe {
-            let table = self.table.current.load();
+            let table = self.table.current();
             let info = table.info();
             info.items + info.growth_left
         }
@@ -736,18 +749,18 @@ impl<'a, T, S> Read<'a, T, S> {
     /// Returns the number of elements in the table.
     #[inline]
     pub fn len(&self) -> usize {
-        unsafe { self.table.current.load().info().items }
+        unsafe { self.table.current().info().items }
     }
 
     /// Returns the number of buckets in the table.
     #[inline]
     pub fn buckets(&self) -> usize {
-        unsafe { self.table.current.load().info().buckets() }
+        unsafe { self.table.current().info().buckets() }
     }
 
     #[inline]
     pub fn iter(&self) -> Iter<'a, T> {
-        let table = self.table.current.load();
+        let table = self.table.current();
 
         // Here we tie the lifetime of self to the iter.
         unsafe {
@@ -763,7 +776,7 @@ impl<'a, T, S> Read<'a, T, S> {
     where
         T: std::fmt::Debug,
     {
-        let table = self.table.current.load();
+        let table = self.table.current();
 
         println!("Table dump:");
 
@@ -790,17 +803,21 @@ impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
     #[inline]
     pub fn clone(&self, hasher: impl Fn(&S, &T) -> u64) -> SyncInsertTable<T, S> {
         // TODO: Optimize
-        let table = self.table.current.load();
+        let table = self.table.current();
         unsafe {
             let buckets = table.info().buckets();
 
             SyncInsertTable {
                 hash_builder: self.table.hash_builder.clone(),
-                current: AtomicCell::new(if buckets > 0 {
-                    table.clone(&self.table.hash_builder, buckets, hasher)
-                } else {
-                    TableRef::empty()
-                }),
+                current: AtomicPtr::new(
+                    if buckets > 0 {
+                        table.clone(&self.table.hash_builder, buckets, hasher)
+                    } else {
+                        TableRef::empty()
+                    }
+                    .data
+                    .as_ptr(),
+                ),
                 old: UnsafeCell::new(Vec::new()),
                 marker: PhantomData,
                 lock: Mutex::new(()),
@@ -822,7 +839,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
     /// This does not check if the given element already exists in the table.
     #[inline]
     pub fn insert_new(&mut self, hash: u64, value: T, hasher: impl Fn(&S, &T) -> u64) -> &'a T {
-        let mut table = self.table.current.load();
+        let mut table = self.table.current();
 
         unsafe {
             if unlikely(table.info().growth_left == 0) {
@@ -842,7 +859,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 
     #[inline]
     pub fn reserve_one(&mut self, hasher: impl Fn(&S, &T) -> u64) {
-        let table = self.table.current.load();
+        let table = self.table.current();
 
         if unlikely(unsafe { table.info().growth_left } == 0) {
             self.expand_by_one(&hasher);
@@ -857,7 +874,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 
     /// Out-of-line slow path for `reserve` and `try_reserve`.
     fn expand_by(&self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
-        let table = self.table.current.load();
+        let table = self.table.current();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let new_items = match unsafe { table.info() }.items.checked_add(additional) {
@@ -882,7 +899,9 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 
         let new_table = table.clone(&self.table.hash_builder, buckets, hasher);
 
-        self.table.current.store(new_table);
+        self.table
+            .current
+            .store(new_table.data.as_ptr(), Ordering::Release);
 
         pin(|pin| {
             let destroy = Arc::new(DestroyTable {
@@ -904,7 +923,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K, V), S> {
     #[inline]
     pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
-        let table = self.table.current.load();
+        let table = self.table.current();
         match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
             Ok(_) => Some((k, v)),
             Err(potential) => {
@@ -991,7 +1010,7 @@ impl PotentialSlot {
         eq: impl FnMut(&T) -> bool,
     ) -> Option<&'a T> {
         unsafe {
-            let table = table.table.current.load();
+            let table = table.table.current();
             let bucket_mask = table.info().bucket_mask;
             let index = self.index;
 
@@ -1016,7 +1035,7 @@ impl PotentialSlot {
         eq: impl FnMut(&T) -> bool,
     ) -> Result<&'a T, PotentialSlot> {
         unsafe {
-            let table = table.table.current.load();
+            let table = table.table.current();
             let bucket_mask = table.info().bucket_mask;
             let index = self.index;
 
@@ -1046,7 +1065,7 @@ impl PotentialSlot {
         hasher: impl Fn(&S, &T) -> u64,
     ) -> &'a T {
         unsafe {
-            let mut table = table.table.current.load();
+            let mut table = table.table.current();
             let bucket_mask = table.info().bucket_mask;
             let index = self.index;
 
@@ -1084,30 +1103,30 @@ impl PotentialSlot {
         value: T,
     ) -> Option<&'a T> {
         unsafe {
-            let mut table = table.table.current.load();
+            let mut table = table.table.current();
             let bucket_mask = table.info().bucket_mask;
             let index = self.index;
-            /*
-                       // Verify that we have not expanded by checking the bucket_mask
-                       // and also check that the index is in bounds for safety.
-                       if unlikely(
-                           bucket_mask != self.bucket_mask
-                               || index > bucket_mask
-                               || table.info().growth_left == 0,
-                       ) {
-                           return None;
-                       }
 
-            if likely(*table.info().ctrl(index) == EMPTY) {*/
-            let bucket = table.bucket(index);
-            bucket.write(value);
+            // Verify that we have not expanded by checking the bucket_mask
+            // and also check that the index is in bounds for safety.
+            if unlikely(
+                bucket_mask != self.bucket_mask
+                    || index > bucket_mask
+                    || table.info().growth_left == 0,
+            ) {
+                return None;
+            }
 
-            table.info_mut().record_item_insert_at(index, hash);
+            if likely(*table.info().ctrl(index) == EMPTY) {
+                let bucket = table.bucket(index);
+                bucket.write(value);
 
-            Some(bucket.as_ref())
-            /*} else {
+                table.info_mut().record_item_insert_at(index, hash);
+
+                Some(bucket.as_ref())
+            } else {
                 None
-            } */
+            }
         }
     }
 }

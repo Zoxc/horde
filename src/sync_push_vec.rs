@@ -3,7 +3,6 @@ use crate::{
     scopeguard::guard,
 };
 use core::ptr::NonNull;
-use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
@@ -14,7 +13,7 @@ use std::{
     mem,
     ops::{Deref, DerefMut},
     slice::Iter,
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicPtr, Ordering},
 };
 use std::{
     cmp,
@@ -61,7 +60,7 @@ impl<'a, T> DerefMut for LockedWrite<'a, T> {
 }
 
 pub struct SyncPushVec<T> {
-    current: AtomicCell<TableRef<T>>,
+    current: AtomicPtr<TableInfo>,
 
     lock: Mutex<()>,
 
@@ -242,7 +241,7 @@ unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
-            self.current.load().free();
+            self.current().free();
             for table in self.old.get_mut() {
                 table.run();
             }
@@ -269,11 +268,15 @@ impl<T> SyncPushVec<T> {
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            current: AtomicCell::new(if capacity > 0 {
-                TableRef::allocate(capacity)
-            } else {
-                TableRef::empty()
-            }),
+            current: AtomicPtr::new(
+                if capacity > 0 {
+                    TableRef::<T>::allocate(capacity)
+                } else {
+                    TableRef::empty()
+                }
+                .data
+                .as_ptr(),
+            ),
             old: UnsafeCell::new(Vec::new()),
             marker: PhantomData,
             lock: Mutex::new(()),
@@ -283,7 +286,7 @@ impl<T> SyncPushVec<T> {
     /// Gets a mutable reference to an element in the table.
     #[inline]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        let table = self.current.load();
+        let table = self.current();
         unsafe {
             if index < table.info().items.load(Ordering::Acquire) {
                 Some(&mut *table.data(index))
@@ -340,13 +343,21 @@ impl<T> SyncPushVec<T> {
             _guard: guard,
         }
     }
+
+    #[inline]
+    fn current(&self) -> TableRef<T> {
+        TableRef {
+            data: unsafe { NonNull::new_unchecked(self.current.load(Ordering::Acquire)) },
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<'a, T> Read<'a, T> {
     /// Gets a reference to an element in the table.
     #[inline]
     pub fn get(&self, index: usize) -> Option<&'a T> {
-        let table = self.table.current.load();
+        let table = self.table.current();
         unsafe {
             if index < table.info().items.load(Ordering::Acquire) {
                 Some(&mut *table.data(index))
@@ -359,25 +370,18 @@ impl<'a, T> Read<'a, T> {
     /// Returns the number of elements the map can hold without reallocating.
     #[inline]
     pub fn capacity(&self) -> usize {
-        unsafe { self.table.current.load().info().capacity }
+        unsafe { self.table.current().info().capacity }
     }
 
     /// Returns the number of elements in the table.
     #[inline]
     pub fn len(&self) -> usize {
-        unsafe {
-            self.table
-                .current
-                .load()
-                .info()
-                .items
-                .load(Ordering::Acquire)
-        }
+        unsafe { self.table.current().info().items.load(Ordering::Acquire) }
     }
 
     #[inline]
     pub fn iter(&self) -> Iter<'a, T> {
-        let table = self.table.current.load();
+        let table = self.table.current();
         unsafe {
             (*slice_from_raw_parts(
                 table.first() as *const T,
@@ -400,7 +404,7 @@ impl<'a, T: Send + Clone> Write<'a, T> {
     /// with its index.
     #[inline]
     pub fn push(&mut self, value: T) -> (&'a T, usize) {
-        let mut table = self.table.current.load();
+        let mut table = self.table.current();
         unsafe {
             let items = table.info().items.load(Ordering::Relaxed);
 
@@ -438,7 +442,7 @@ impl<'a, T: Send + Clone> Write<'a, T> {
     };
 
     fn expand_by(&self, additional: usize) -> TableRef<T> {
-        let table = self.table.current.load();
+        let table = self.table.current();
 
         let items = unsafe { table.info().items.load(Ordering::Relaxed) };
         let capacity = unsafe { table.info().capacity };
@@ -456,7 +460,9 @@ impl<'a, T: Send + Clone> Write<'a, T> {
 
         let new_table = table.clone(cap);
 
-        self.table.current.store(new_table);
+        self.table
+            .current
+            .store(new_table.data.as_ptr(), Ordering::Release);
 
         pin(|pin| {
             let destroy = Arc::new(DestroyTable {

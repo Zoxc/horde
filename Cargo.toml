@@ -9,8 +9,6 @@ crate-type = ["rlib", "dylib"]
 [dependencies]
 rustc-hash = "1.1.0"
 parking_lot = "0.11.1"
-crossbeam-epoch = "0.8.0"
-crossbeam-utils = "0.8.0"
 
 [profile.bench]
 debug = 0

@@ -90,8 +90,8 @@ fn test_expand() {
     assert_eq!(m.len(), 0);
 
     let mut i = 0;
-    let old_raw_cap = unsafe { m.current.load().info().buckets() };
-    while old_raw_cap == unsafe { m.current.load().info().buckets() } {
+    let old_raw_cap = unsafe { m.current().info().buckets() };
+    while old_raw_cap == unsafe { m.current().info().buckets() } {
         m.map_insert(i, i);
         i += 1;
     }

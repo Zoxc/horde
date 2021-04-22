@@ -52,9 +52,7 @@ fn potential_insert(potential: PotentialSlot, mut table: Write<'_, usize>) {
 #[no_mangle]
 unsafe fn potential_insert_opt(mut table: Write<'_, usize>, index: usize) {
     let potential = PotentialSlot {
-        bucket_mask: (*(table.table.current.as_ptr() as *const TableRef<usize>))
-            .info()
-            .bucket_mask,
+        bucket_mask: table.table.current().info().bucket_mask,
         index,
     };
     potential.insert_new(&mut table, 5, 5, |_, h| *h as u64);
