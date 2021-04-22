@@ -294,20 +294,10 @@ impl<T> Clone for TableRef<T> {
 impl<T> TableRef<T> {
     #[inline]
     fn empty() -> Self {
-        // FIXME: Figure out if we need this to be aligned to `T`, even though no references to `T`
-        // should be created from it.
-        // There can be padding bytes at the end of a real layout to make it a multiple of the
-        // alignment, but these aren't accessed in practise.
         #[repr(C)]
         struct EmptyTable {
             info: TableInfo,
             control_bytes: [Group; 1],
-        }
-
-        if cfg!(debug_assertions) {
-            let real = Self::layout(0).unwrap().0;
-            let dummy = Layout::new::<EmptyTable>().align_to(real.align()).unwrap();
-            debug_assert_eq!(real, dummy);
         }
 
         let empty: &'static EmptyTable = &EmptyTable {
@@ -394,15 +384,7 @@ impl<T> TableRef<T> {
 
     #[inline]
     unsafe fn bucket_past_last(&self) -> *mut T {
-        let buckets = Layout::new::<T>()
-            .repeat(self.info().buckets())
-            .unwrap_unchecked()
-            .0;
-        let buckets_size = buckets.size();
-        let info = Layout::new::<TableInfo>();
-        let info_offset = buckets.extend(info).unwrap_unchecked().1;
-        let info_padding = info_offset - buckets_size;
-        (self.data.as_ptr() as *const u8).sub(info_padding) as *mut T
+        self.data.as_ptr() as *mut T
     }
 
     /// Returns a pointer to an element in the table.
@@ -526,16 +508,15 @@ impl<T: Clone> TableRef<T> {
                 // This may panic.
                 let hash = hasher(hash_builder, item.as_ref());
 
+                // Clone may panic
+                let item = item.as_ref().clone();
+
                 // We can use a simpler version of insert() here since:
-                // - there are no DELETED entries.
                 // - we know there is enough space in the table.
                 // - all elements are unique.
                 let (index, _) = new_table.info().prepare_insert_slot(hash);
 
-                // FIXME: Scheme to drop items on panic?
-
-                // Clone may panic
-                new_table.bucket(index).write(item.as_ref().clone());
+                new_table.bucket(index).write(item);
             }
 
             *guard = None;
