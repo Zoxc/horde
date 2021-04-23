@@ -186,8 +186,8 @@ impl<T> TableRef<T> {
     }
 
     #[inline]
-    unsafe fn past_last(&self) -> *mut T {
-        self.data.as_ptr() as *mut T
+    unsafe fn first(&self) -> *mut T {
+        (self.data.as_ptr() as *mut T).sub(self.info().capacity)
     }
 
     /// Returns a pointer to an element in the table.
@@ -199,7 +199,7 @@ impl<T> TableRef<T> {
             // It only has an alignment of 64.
             mem::align_of::<T>() as *const T
         } else {
-            self.past_last().sub(items) as *const T
+            self.first() as *const T
         };
         slice_from_raw_parts(base, items)
     }
@@ -209,7 +209,7 @@ impl<T> TableRef<T> {
     unsafe fn data(&self, index: usize) -> *mut T {
         debug_assert!(index < self.info().items.load(Ordering::Acquire));
 
-        self.past_last().sub(index).sub(1)
+        self.first().add(index)
     }
 }
 
@@ -228,7 +228,7 @@ impl<T: Clone> TableRef<T> {
 
             // Copy all elements to the new table.
             for (index, item) in iter.enumerate() {
-                new_table.past_last().sub(index).sub(1).write(item.clone());
+                new_table.first().add(index).write(item.clone());
 
                 // Write items per iteration in case `clone` panics.
                 *new_table.info_mut().items.get_mut() = index + 1;
@@ -426,19 +426,17 @@ impl<'a, T: Send + Clone> Write<'a, T> {
     pub fn push(&mut self, value: T) -> (&'a T, usize) {
         let mut table = self.table.current();
         unsafe {
-            let mut items = table.info().items.load(Ordering::Relaxed);
+            let items = table.info().items.load(Ordering::Relaxed);
 
             if unlikely(items == table.info().capacity) {
                 table = self.expand_by_one();
             }
 
-            items += 1;
-
-            let result = table.past_last().sub(items);
+            let result = table.first().add(items);
 
             result.write(value);
 
-            table.info().items.store(items, Ordering::Release);
+            table.info().items.store(items + 1, Ordering::Release);
 
             (&*result, items)
         }
