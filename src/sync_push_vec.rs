@@ -12,7 +12,6 @@ use std::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
-    slice::Iter,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use std::{
@@ -37,7 +36,7 @@ pub struct Write<'a, T> {
     table: &'a SyncPushVec<T>,
 }
 
-/// A reference to the table which can write to it. It is acquired either by a lock.
+/// A reference to the table which can write to it. It is acquired by a lock.
 pub struct LockedWrite<'a, T> {
     table: Write<'a, T>,
     _guard: MutexGuard<'a, ()>,
@@ -102,39 +101,47 @@ impl<T> TableRef<T> {
             debug_assert_eq!(real, dummy);
         }
 
-        // FIXME: Figure out if we need this to be aligned to `T`, even though no references to `T`
-        // should be created from it.
-        // There can be padding bytes at the end of a real layout to make it a multiple of the
-        // alignment, but these aren't accessed in practise.
-        static EMPTY: TableInfo = TableInfo {
-            capacity: 0,
-            items: AtomicUsize::new(0),
+        #[repr(C, align(64))]
+        struct EmptyTable {
+            info: TableInfo,
+        }
+
+        static EMPTY: EmptyTable = EmptyTable {
+            info: TableInfo {
+                capacity: 0,
+                items: AtomicUsize::new(0),
+            },
         };
 
         Self {
-            data: unsafe { NonNull::new_unchecked(&EMPTY as *const TableInfo as *mut TableInfo) },
+            data: unsafe {
+                NonNull::new_unchecked(&EMPTY.info as *const TableInfo as *mut TableInfo)
+            },
             marker: PhantomData,
         }
     }
 
     #[inline]
     fn layout(capacity: usize) -> Result<(Layout, usize), LayoutError> {
-        let info = Layout::new::<TableInfo>();
         let data = Layout::new::<T>().repeat(capacity)?.0;
-        info.extend(data)
+        let info = Layout::new::<TableInfo>();
+        data.extend(info)
     }
 
     #[inline]
     fn allocate(capacity: usize) -> Self {
-        let (layout, _) = Self::layout(capacity).expect("capacity overflow");
+        let (layout, info_offset) = Self::layout(capacity).expect("capacity overflow");
 
         let ptr: NonNull<u8> = Global
             .allocate(layout)
             .map(|ptr| ptr.cast())
             .unwrap_or_else(|_| handle_alloc_error(layout));
 
+        let info =
+            unsafe { NonNull::new_unchecked(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
+
         let mut result = Self {
-            data: ptr.cast(),
+            data: info,
             marker: PhantomData,
         };
 
@@ -157,9 +164,12 @@ impl<T> TableRef<T> {
                     self.data(i).drop_in_place();
                 }
             }
+
+            let (layout, info_offset) = Self::layout(self.info().capacity).unwrap_unchecked();
+
             Global.deallocate(
-                self.data.cast(),
-                Self::layout(self.info().capacity).unwrap_unchecked().0,
+                NonNull::new_unchecked((self.data.as_ptr() as *mut u8).sub(info_offset)),
+                layout,
             )
         }
     }
@@ -173,9 +183,22 @@ impl<T> TableRef<T> {
     }
 
     #[inline]
-    unsafe fn first(&self) -> *mut T {
-        let offset = Self::layout(0).unwrap_unchecked().1;
-        (self.data.as_ptr() as *const u8).add(offset) as *mut T
+    unsafe fn past_last(&self) -> *mut T {
+        self.data.as_ptr() as *mut T
+    }
+
+    /// Returns a pointer to an element in the table.
+    #[inline]
+    unsafe fn slice(&self) -> *const [T] {
+        let items = self.info().items.load(Ordering::Acquire);
+        let base = if items == 0 && mem::align_of::<T>() > 64 {
+            // Need a special case here since our empty allocation isn't aligned to T.
+            // It only has an alignment of 64.
+            mem::align_of::<T>() as *const T
+        } else {
+            self.past_last().sub(items) as *const T
+        };
+        slice_from_raw_parts(base, items)
     }
 
     /// Returns a pointer to an element in the table.
@@ -183,7 +206,7 @@ impl<T> TableRef<T> {
     unsafe fn data(&self, index: usize) -> *mut T {
         debug_assert!(index < self.info().items.load(Ordering::Acquire));
 
-        self.first().add(index)
+        self.past_last().sub(index).sub(1)
     }
 }
 
@@ -198,15 +221,11 @@ impl<T: Clone> TableRef<T> {
                 new_table.map(|new_table| new_table.free());
             });
 
-            let iter = (*slice_from_raw_parts(
-                self.first() as *const T,
-                self.info().items.load(Ordering::Relaxed),
-            ))
-            .iter();
+            let iter = (*self.slice()).iter();
 
             // Copy all elements to the new table.
             for (index, item) in iter.enumerate() {
-                new_table.first().add(index).write(item.clone());
+                new_table.past_last().sub(index).sub(1).write(item.clone());
 
                 // Write items per iteration in case `clone` panics.
                 *new_table.info_mut().items.get_mut() = index + 1;
@@ -380,15 +399,9 @@ impl<'a, T> Read<'a, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<'a, T> {
+    pub fn as_slice(&self) -> &'a [T] {
         let table = self.table.current();
-        unsafe {
-            (*slice_from_raw_parts(
-                table.first() as *const T,
-                table.info().items.load(Ordering::Acquire),
-            ))
-            .iter()
-        }
+        unsafe { &*table.slice() }
     }
 }
 
@@ -406,17 +419,19 @@ impl<'a, T: Send + Clone> Write<'a, T> {
     pub fn push(&mut self, value: T) -> (&'a T, usize) {
         let mut table = self.table.current();
         unsafe {
-            let items = table.info().items.load(Ordering::Relaxed);
+            let mut items = table.info().items.load(Ordering::Relaxed);
 
             if unlikely(items == table.info().capacity) {
                 table = self.expand_by_one();
             }
 
-            let result = table.first().add(items);
+            items += 1;
+
+            let result = table.past_last().sub(items);
 
             result.write(value);
 
-            table.info().items.store(items + 1, Ordering::Release);
+            table.info().items.store(items, Ordering::Release);
 
             (&*result, items)
         }
@@ -424,7 +439,7 @@ impl<'a, T: Send + Clone> Write<'a, T> {
 
     #[cold]
     #[inline(never)]
-    fn expand_by_one(&self) -> TableRef<T> {
+    fn expand_by_one(&mut self) -> TableRef<T> {
         self.expand_by(1)
     }
 
@@ -441,7 +456,7 @@ impl<'a, T: Send + Clone> Write<'a, T> {
         1
     };
 
-    fn expand_by(&self, additional: usize) -> TableRef<T> {
+    fn expand_by(&mut self, additional: usize) -> TableRef<T> {
         let table = self.table.current();
 
         let items = unsafe { table.info().items.load(Ordering::Relaxed) };

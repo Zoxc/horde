@@ -101,7 +101,7 @@ pub struct Write<'a, T, S = DefaultHashBuilder> {
     table: &'a SyncInsertTable<T, S>,
 }
 
-/// A reference to the table which can write to it. It is acquired either by a lock.
+/// A reference to the table which can write to it. It is acquired by a lock.
 pub struct LockedWrite<'a, T, S = DefaultHashBuilder> {
     table: Write<'a, T, S>,
     _guard: MutexGuard<'a, ()>,
@@ -362,6 +362,8 @@ impl<T> TableRef<T> {
     unsafe fn free(self) {
         if self.info().items > 0 {
             self.iter().drop_elements();
+            // TODO: Document why we don't need to account for padding when adjusting
+            // the pointer. Sizes allowed can't result in padding?
             Global.deallocate(
                 NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
                 Self::layout(self.info().buckets()).unwrap_unchecked().0,
@@ -849,12 +851,12 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 
     #[cold]
     #[inline(never)]
-    fn expand_by_one(&self, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
+    fn expand_by_one(&mut self, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
         self.expand_by(1, hasher)
     }
 
     /// Out-of-line slow path for `reserve` and `try_reserve`.
-    fn expand_by(&self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
+    fn expand_by(&mut self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
         let table = self.table.current();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.

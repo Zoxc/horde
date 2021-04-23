@@ -4,6 +4,23 @@ use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 
 #[test]
+fn test_high_align() {
+    #[repr(align(128))]
+    #[derive(Clone)]
+    struct A(u8);
+    let mut m = SyncPushVec::<A>::new();
+    for _a in m.write().read().as_slice() {}
+    m.write().push(A(1));
+    for _a in m.write().read().as_slice() {}
+}
+
+#[test]
+fn test_low_align() {
+    let mut m = SyncPushVec::<u8>::with_capacity(1);
+    m.write().push(1);
+}
+
+#[test]
 fn test_insert() {
     let m = SyncPushVec::new();
     assert_eq!(m.len(), 0);
