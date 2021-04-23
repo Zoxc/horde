@@ -1,3 +1,7 @@
+//! An insert-only hash table with lock-free reads.
+//!
+//! It is based on the table from the `hashbrown` crate.
+
 use crate::{
     collect::{pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
@@ -88,8 +92,9 @@ impl<T> Bucket<T> {
     }
 }
 
-/// A reference to the table which can read from it. It is acquired either by a pin,
-/// or by exclusive access to the table.
+/// A handle to a [SyncInsertTable] with read access.
+///
+/// It is acquired either by a pin, or by exclusive access to the table.
 pub struct Read<'a, T, S = DefaultHashBuilder> {
     table: &'a SyncInsertTable<T, S>,
 }
@@ -101,13 +106,12 @@ impl<T, S> Clone for Read<'_, T, S> {
     }
 }
 
-/// A reference to the table which can write to it. It is acquired either by a lock,
-/// or by exclusive access to the table.
+/// A handle to a [SyncInsertTable] with write access.
 pub struct Write<'a, T, S = DefaultHashBuilder> {
     table: &'a SyncInsertTable<T, S>,
 }
 
-/// A reference to the table which can write to it. It is acquired by a lock.
+/// A handle to a [SyncInsertTable] with write access protected by a lock.
 pub struct LockedWrite<'a, T, S = DefaultHashBuilder> {
     table: Write<'a, T, S>,
     _guard: MutexGuard<'a, ()>,
@@ -131,7 +135,9 @@ impl<'a, T, S> DerefMut for LockedWrite<'a, T, S> {
 
 pub type DefaultHashBuilder = RandomState;
 
-/// A raw hash table with an unsafe API.
+/// An insert-only hash table with lock-free reads.
+///
+/// It is based on the table from the `hashbrown` crate.
 pub struct SyncInsertTable<T, S = DefaultHashBuilder> {
     hash_builder: S,
 
@@ -575,6 +581,10 @@ impl<T, S: Default> Default for SyncInsertTable<T, S> {
 }
 
 impl<T> SyncInsertTable<T, DefaultHashBuilder> {
+    /// Creates an empty [SyncInsertTable].
+    ///
+    /// The hash map is initially created with a capacity of 0, so it will not allocate until it
+    /// is first inserted into.
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -582,6 +592,11 @@ impl<T> SyncInsertTable<T, DefaultHashBuilder> {
 }
 
 impl<T, S> SyncInsertTable<T, S> {
+    /// Creates an empty [SyncInsertTable] with the specified capacity, using `hash_builder`
+    /// to hash the elements or keys.
+    ///
+    /// The hash map will be able to hold at least `capacity` elements without
+    /// reallocating. If `capacity` is 0, the hash map will not allocate.
     #[inline]
     pub fn new_with(hash_builder: S, capacity: usize) -> Self {
         Self {
@@ -619,26 +634,35 @@ impl<T, S> SyncInsertTable<T, S> {
         }
     }
 
+    /// Gets a reference to the underlying mutex that protects writes.
     #[inline]
     pub fn mutex(&self) -> &Mutex<()> {
         &self.lock
     }
 
+    /// Creates a [Read] handle from a pinned region.
+    ///
+    /// Use [crate::collect::pin] to get a `Pin` instance.
     #[inline]
     pub fn read<'a>(&'a self, _pin: Pin<'a>) -> Read<'a, T, S> {
         Read { table: self }
     }
 
+    /// Creates a [Write] handle without checking for exclusive access.
+    ///
+    /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T, S> {
         Write { table: self }
     }
 
+    /// Creates a [Write] handle from a mutable reference.
     #[inline]
     pub fn write(&mut self) -> Write<'_, T, S> {
         Write { table: self }
     }
 
+    /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, T, S> {
         LockedWrite {
@@ -647,6 +671,7 @@ impl<T, S> SyncInsertTable<T, S> {
         }
     }
 
+    /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
     #[inline]
     pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, T, S> {
         // Verify that we are target of the guard
@@ -692,7 +717,8 @@ impl<K: Hash, V, S: BuildHasher> SyncInsertTable<(K, V), S> {
 }
 
 impl<'a, T, S> Read<'a, T, S> {
-    /// Gets a reference to an element in the table.
+    /// Gets a reference to an element in the table or a potential location
+    /// where that element could be.
     #[inline]
     pub fn get_potential(
         self,
@@ -735,12 +761,8 @@ impl<'a, T, S> Read<'a, T, S> {
         unsafe { self.table.current().info().items }
     }
 
-    /// Returns the number of buckets in the table.
-    #[inline]
-    pub fn buckets(self) -> usize {
-        unsafe { self.table.current().info().buckets() }
-    }
-
+    /// An iterator visiting all key-value pairs in arbitrary order.
+    /// The iterator element type is `(&'a K, &'a V)`.
     #[inline]
     pub fn iter(self) -> Iter<'a, T> {
         let table = self.table.current();
@@ -783,8 +805,9 @@ impl<'a, T, S> Read<'a, T, S> {
 }
 
 impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
+    /// Returns a new copy of the table.
     #[inline]
-    pub fn clone(&self, hasher: impl Fn(&S, &T) -> u64) -> SyncInsertTable<T, S> {
+    pub fn clone(self, hasher: impl Fn(&S, &T) -> u64) -> SyncInsertTable<T, S> {
         // TODO: Optimize
         let table = self.table.current();
         unsafe {
@@ -809,7 +832,26 @@ impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
     }
 }
 
+impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
+    /// Treat the table as a hash map and lookup a given key.
+    #[inline]
+    pub fn map_get<Q: ?Sized>(self, k: &Q) -> Option<&'a V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let hash = make_hash::<K, Q, S>(&self.table.hash_builder, k);
+
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.get(hash, equivalent_key(k)) {
+            Some(&(_, ref v)) => Some(v),
+            None => None,
+        }
+    }
+}
+
 impl<'a, T, S> Write<'a, T, S> {
+    /// Creates a [Read] handle which gives access to read operations.
     #[inline]
     pub fn read(&self) -> Read<'a, T, S> {
         Read { table: self.table }
@@ -840,6 +882,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         }
     }
 
+    /// Reserve room for one more element.
     #[inline]
     pub fn reserve_one(&mut self, hasher: impl Fn(&S, &T) -> u64) {
         let table = self.table.current();
@@ -904,6 +947,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 }
 
 impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K, V), S> {
+    /// Treat the table as a hash map and insert a key-value pair where `hash` is the key's hash.
     #[inline]
     pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
         let table = self.table.current();
@@ -916,6 +960,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
         }
     }
 
+    /// Treat the table as a hash map and insert a key-value pair.
     #[inline]
     pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
         let hash = self.table.hash_any(&k);
@@ -926,6 +971,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
 impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
     SyncInsertTable<(K, V), S>
 {
+    /// Create a table which works as a hash map from an iterator.
     #[inline]
     pub fn map_from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
@@ -937,23 +983,6 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
             });
         }
         map
-    }
-}
-
-impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
-    #[inline]
-    pub fn map_get<Q: ?Sized>(self, k: &Q) -> Option<&'a V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let hash = make_hash::<K, Q, S>(&self.table.hash_builder, k);
-
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.get(hash, equivalent_key(k)) {
-            Some(&(_, ref v)) => Some(v),
-            None => None,
-        }
     }
 }
 
@@ -990,7 +1019,6 @@ impl PotentialSlot {
         cold_path(|| table.get(hash, eq))
     }
 
-    /// Gets a reference to an element in the table.
     #[inline]
     pub fn refresh<'a, T, S>(
         self,
@@ -1141,13 +1169,6 @@ impl<'a, T> Iterator for Iter<'a, T> {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
-    }
-}
-
-impl<T> ExactSizeIterator for Iter<'_, T> {
-    #[inline]
-    fn len(&self) -> usize {
-        self.inner.len()
     }
 }
 
@@ -1395,9 +1416,8 @@ impl<T> Iterator for RawIter<T> {
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.items, Some(self.items))
+        (self.items, None)
     }
 }
 
-impl<T> ExactSizeIterator for RawIter<T> {}
 impl<T> FusedIterator for RawIter<T> {}
