@@ -1,3 +1,5 @@
+#![cfg(code)]
+
 use crate::collect;
 
 #[inline(never)]

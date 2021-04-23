@@ -1,3 +1,5 @@
+#![cfg(code)]
+
 use std::collections::HashMap;
 
 use crate::collect::Pin;

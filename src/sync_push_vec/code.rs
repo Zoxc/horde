@@ -1,3 +1,5 @@
+#![cfg(code)]
+
 use super::{SyncPushVec, Write};
 
 #[no_mangle]

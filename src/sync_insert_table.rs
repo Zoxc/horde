@@ -133,6 +133,7 @@ impl<'a, T, S> DerefMut for LockedWrite<'a, T, S> {
     }
 }
 
+/// Default hash builder for [SyncInsertTable].
 pub type DefaultHashBuilder = RandomState;
 
 /// An insert-only hash table with lock-free reads.
@@ -373,7 +374,12 @@ impl<T> TableRef<T> {
     #[inline]
     unsafe fn free(self) {
         if self.info().items > 0 {
-            self.iter().drop_elements();
+            if mem::needs_drop::<T>() {
+                for item in self.iter() {
+                    item.drop();
+                }
+            }
+
             // TODO: Document why we don't need to account for padding when adjusting
             // the pointer. Sizes allowed can't result in padding?
             Global.deallocate(
@@ -644,7 +650,8 @@ impl<T, S> SyncInsertTable<T, S> {
     ///
     /// Use [crate::collect::pin] to get a `Pin` instance.
     #[inline]
-    pub fn read<'a>(&'a self, _pin: Pin<'a>) -> Read<'a, T, S> {
+    pub fn read<'a>(&'a self, pin: Pin<'a>) -> Read<'a, T, S> {
+        let _pin = pin;
         Read { table: self }
     }
 
@@ -696,6 +703,7 @@ impl<T, S> SyncInsertTable<T, S> {
 }
 
 impl<T, S: BuildHasher> SyncInsertTable<T, S> {
+    /// Hashes any hashable value with the hasher the table was constructed with.
     #[inline]
     pub fn hash_any<V: Hash + ?Sized>(&self, val: &V) -> u64 {
         make_insert_hash(&self.hash_builder, val)
@@ -703,6 +711,8 @@ impl<T, S: BuildHasher> SyncInsertTable<T, S> {
 }
 
 impl<T: Hash, S: BuildHasher> SyncInsertTable<T, S> {
+    /// Hashes a value with the hasher the table was constructed with.
+    /// This can be passed to methods expecting a hasher.
     #[inline]
     pub fn hasher(hash_builder: &S, val: &T) -> u64 {
         make_insert_hash(hash_builder, val)
@@ -710,6 +720,9 @@ impl<T: Hash, S: BuildHasher> SyncInsertTable<T, S> {
 }
 
 impl<K: Hash, V, S: BuildHasher> SyncInsertTable<(K, V), S> {
+    /// Hashes the first element of a pair with the `hash_builder` passed.
+    /// This is useful to treat the table as a hash map and can be passed to methods
+    /// expecting a hasher.
     #[inline]
     pub fn map_hasher(hash_builder: &S, val: &(K, V)) -> u64 {
         make_insert_hash(hash_builder, &val.0)
@@ -1375,16 +1388,6 @@ impl<T> FusedIterator for RawIterRange<T> {}
 struct RawIter<T> {
     iter: RawIterRange<T>,
     items: usize,
-}
-
-impl<T> RawIter<T> {
-    unsafe fn drop_elements(&mut self) {
-        if mem::needs_drop::<T>() && self.len() != 0 {
-            for item in self {
-                item.drop();
-            }
-        }
-    }
 }
 
 impl<T> Clone for RawIter<T> {
