@@ -2,7 +2,7 @@ use super::{SyncPushVec, Write};
 
 #[no_mangle]
 unsafe fn get(a: &SyncPushVec<usize>) -> Option<usize> {
-    a.unsafe_write().read().get(2).cloned()
+    a.unsafe_write().read().as_slice().get(2).cloned()
 }
 
 #[no_mangle]

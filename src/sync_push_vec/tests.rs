@@ -44,8 +44,8 @@ fn test_insert() {
     assert_eq!(m.lock().read().len(), 1);
     m.lock().push(5);
     assert_eq!(m.lock().read().len(), 2);
-    assert_eq!(*m.lock().read().get(0).unwrap(), 2);
-    assert_eq!(*m.lock().read().get(1).unwrap(), 5);
+    assert_eq!(m.lock().read().as_slice()[0], 2);
+    assert_eq!(m.lock().read().as_slice()[1], 5);
 
     release();
 }

@@ -90,9 +90,15 @@ impl<T> Bucket<T> {
 
 /// A reference to the table which can read from it. It is acquired either by a pin,
 /// or by exclusive access to the table.
-#[derive(Clone, Copy)]
 pub struct Read<'a, T, S = DefaultHashBuilder> {
     table: &'a SyncInsertTable<T, S>,
+}
+
+impl<T, S> Copy for Read<'_, T, S> {}
+impl<T, S> Clone for Read<'_, T, S> {
+    fn clone(&self) -> Self {
+        Self { table: self.table }
+    }
 }
 
 /// A reference to the table which can write to it. It is acquired either by a lock,
@@ -695,7 +701,7 @@ impl<'a, T, S> Read<'a, T, S> {
     /// Gets a reference to an element in the table.
     #[inline]
     pub fn get_potential(
-        &self,
+        self,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
     ) -> Result<&'a T, PotentialSlot> {
@@ -708,7 +714,7 @@ impl<'a, T, S> Read<'a, T, S> {
 
     /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
+    pub fn get(self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.table.find(hash, eq) {
             Some(bucket) => Some(unsafe { bucket.as_ref() }),
@@ -721,7 +727,7 @@ impl<'a, T, S> Read<'a, T, S> {
     /// This number is a lower bound; the table might be able to hold
     /// more, but is guaranteed to be able to hold at least this many.
     #[inline]
-    pub fn capacity(&self) -> usize {
+    pub fn capacity(self) -> usize {
         unsafe {
             let table = self.table.current();
             let info = table.info();
@@ -731,18 +737,18 @@ impl<'a, T, S> Read<'a, T, S> {
 
     /// Returns the number of elements in the table.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn len(self) -> usize {
         unsafe { self.table.current().info().items }
     }
 
     /// Returns the number of buckets in the table.
     #[inline]
-    pub fn buckets(&self) -> usize {
+    pub fn buckets(self) -> usize {
         unsafe { self.table.current().info().buckets() }
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<'a, T> {
+    pub fn iter(self) -> Iter<'a, T> {
         let table = self.table.current();
 
         // Here we tie the lifetime of self to the iter.
@@ -755,7 +761,7 @@ impl<'a, T, S> Read<'a, T, S> {
     }
 
     #[allow(dead_code)]
-    fn dump(&self)
+    fn dump(self)
     where
         T: std::fmt::Debug,
     {
@@ -811,7 +817,7 @@ impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
 
 impl<'a, T, S> Write<'a, T, S> {
     #[inline]
-    pub fn read(&self) -> Read<'_, T, S> {
+    pub fn read(&self) -> Read<'a, T, S> {
         Read { table: self.table }
     }
 }
@@ -953,7 +959,7 @@ impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> 
 
 impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
     #[inline]
-    pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<&'a V>
+    pub fn map_get<Q: ?Sized>(self, k: &Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,

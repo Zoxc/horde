@@ -25,20 +25,26 @@ use std::{
 mod code;
 mod tests;
 
-/// A reference to the table which can read from it. It is acquired either by a pin,
-/// or by exclusive access to the table.
-#[derive(Clone, Copy)]
+/// A handle to a [SyncPushVec] with read access.
+///
+/// It is acquired either by a pin, or by exclusive access to the vector.
 pub struct Read<'a, T> {
     table: &'a SyncPushVec<T>,
 }
 
-/// A reference to the table which can write to it. It is acquired either by a lock,
-/// or by exclusive access to the table.
+impl<T> Copy for Read<'_, T> {}
+impl<T> Clone for Read<'_, T> {
+    fn clone(&self) -> Self {
+        Self { table: self.table }
+    }
+}
+
+/// A handle to a [SyncPushVec] with write access.
 pub struct Write<'a, T> {
     table: &'a SyncPushVec<T>,
 }
 
-/// A reference to the table which can write to it. It is acquired by a lock.
+/// A handle to a [SyncPushVec] with write access protected by a lock.
 pub struct LockedWrite<'a, T> {
     table: Write<'a, T>,
     _guard: MutexGuard<'a, ()>,
@@ -380,41 +386,30 @@ impl<T> SyncPushVec<T> {
 }
 
 impl<'a, T> Read<'a, T> {
-    /// Gets a reference to an element in the table.
-    #[inline]
-    pub fn get(&self, index: usize) -> Option<&'a T> {
-        let table = self.table.current();
-        unsafe {
-            if index < table.info().items.load(Ordering::Acquire) {
-                Some(&mut *table.data(index))
-            } else {
-                None
-            }
-        }
-    }
-
     /// Returns the number of elements the map can hold without reallocating.
     #[inline]
-    pub fn capacity(&self) -> usize {
+    pub fn capacity(self) -> usize {
         unsafe { self.table.current().info().capacity }
     }
 
     /// Returns the number of elements in the table.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn len(self) -> usize {
         unsafe { self.table.current().info().items.load(Ordering::Acquire) }
     }
 
+    /// Extracts a slice containing the entire vector.
     #[inline]
-    pub fn as_slice(&self) -> &'a [T] {
+    pub fn as_slice(self) -> &'a [T] {
         let table = self.table.current();
         unsafe { &*table.slice() }
     }
 }
 
 impl<'a, T> Write<'a, T> {
+    /// Creates a [Read] handle which gives access to read operations.
     #[inline]
-    pub fn read(&self) -> Read<'_, T> {
+    pub fn read(&self) -> Read<'a, T> {
         Read { table: self.table }
     }
 }
@@ -442,6 +437,9 @@ impl<'a, T: Send + Clone> Write<'a, T> {
         }
     }
 
+    /// Reserves capacity for at least `additional` more elements to be inserted
+    /// in the given vector. The collection may reserve more space to avoid
+    /// frequent reallocations. Does nothing if the capacity is already sufficient.
     #[inline]
     pub fn reserve(&mut self, additional: usize) {
         let table = self.table.current();
