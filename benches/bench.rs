@@ -15,13 +15,13 @@ use concurrent::{
 use test::{black_box, Bencher};
 
 fn intern_map() -> SyncInsertTable<(u64, u64)> {
-    let m = SyncInsertTable::new();
+    let mut m = SyncInsertTable::new();
     for i in 0..50000 {
         let mut s = std::collections::hash_map::DefaultHasher::new();
         s.write_u64(i);
         let s = s.finish();
         if s % 100 > 40 {
-            m.map_insert(i, i * 2);
+            m.write().map_insert(i, i * 2);
         }
     }
     m
@@ -135,7 +135,7 @@ fn intern4(b: &mut Bencher) {
 fn insert(b: &mut Bencher) {
     #[inline(never)]
     fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
-        m.map_insert(i, i * 2);
+        m.lock().map_insert(i, i * 2);
     }
 
     b.iter(|| {

@@ -30,8 +30,8 @@ fn alloc_test(bucket_count: usize) -> TableRef<usize> {
 }
 
 #[no_mangle]
-fn len_test(table: &SyncInsertTable<u64>) {
-    table.len();
+fn len_test(table: &mut SyncInsertTable<u64>) {
+    table.write().read().len();
 }
 
 #[no_mangle]

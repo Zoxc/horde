@@ -2,7 +2,7 @@ use crate::{
     collect::{pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
-    util::{cold_path, equivalent_key, make_hash, make_hasher, make_insert_hash},
+    util::{cold_path, equivalent_key, make_hash, make_insert_hash},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
@@ -639,12 +639,6 @@ impl<T, S> SyncInsertTable<T, S> {
         Write { table: self }
     }
 
-    /// Returns the number of elements in the table.
-    #[inline]
-    pub fn len(&self) -> usize {
-        pin(|pin| self.read(pin).len())
-    }
-
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, T, S> {
         LockedWrite {
@@ -916,7 +910,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
         match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
             Ok(_) => Some((k, v)),
             Err(potential) => {
-                potential.insert_new(self, hash, (k, v), make_hasher::<K, _, V, S>());
+                potential.insert_new(self, hash, (k, v), SyncInsertTable::map_hasher);
                 None
             }
         }
@@ -924,7 +918,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
 
     #[inline]
     pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
-        let hash = make_insert_hash(&self.table.hash_builder, &k);
+        let hash = self.table.hash_any(&k);
         self.map_insert_with_hash(k, v, hash)
     }
 }
@@ -946,17 +940,6 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
     }
 }
 
-impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher> SyncInsertTable<(K, V), S> {
-    #[inline]
-    pub fn map_get<Q: ?Sized>(&self, k: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        pin(|pin| self.read(pin).map_get(k).cloned())
-    }
-}
-
 impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
     #[inline]
     pub fn map_get<Q: ?Sized>(self, k: &Q) -> Option<&'a V>
@@ -971,14 +954,6 @@ impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
             Some(&(_, ref v)) => Some(v),
             None => None,
         }
-    }
-}
-
-impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> SyncInsertTable<(K, V), S> {
-    #[inline]
-    pub fn map_insert(&self, k: K, v: V) -> Option<(K, V)> {
-        let hash = make_insert_hash(&self.hash_builder, &k);
-        self.lock().map_insert_with_hash(k, v, hash)
     }
 }
 

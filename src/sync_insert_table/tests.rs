@@ -29,10 +29,10 @@ fn high_align() {
 fn test_create_capacity_zero() {
     let m = SyncInsertTable::new_with(RandomState::new(), 0);
 
-    assert!(m.map_insert(1, 1).is_none());
+    assert!(m.lock().map_insert(1, 1).is_none());
 
-    assert!(m.map_get(&1).is_some());
-    assert!(m.map_get(&0).is_none());
+    assert!(m.lock().read().map_get(&1).is_some());
+    assert!(m.lock().read().map_get(&0).is_none());
 
     release();
 }
@@ -40,13 +40,13 @@ fn test_create_capacity_zero() {
 #[test]
 fn test_insert() {
     let m = SyncInsertTable::new();
-    assert_eq!(m.len(), 0);
-    assert!(m.map_insert(1, 2).is_none());
-    assert_eq!(m.len(), 1);
-    assert!(m.map_insert(2, 4).is_none());
-    assert_eq!(m.len(), 2);
-    assert_eq!(m.map_get(&1).unwrap(), 2);
-    assert_eq!(m.map_get(&2).unwrap(), 4);
+    assert_eq!(m.lock().read().len(), 0);
+    assert!(m.lock().map_insert(1, 2).is_none());
+    assert_eq!(m.lock().read().len(), 1);
+    assert!(m.lock().map_insert(2, 4).is_none());
+    assert_eq!(m.lock().read().len(), 2);
+    assert_eq!(*m.lock().read().map_get(&1).unwrap(), 2);
+    assert_eq!(*m.lock().read().map_get(&2).unwrap(), 4);
 
     release();
 }
@@ -54,10 +54,10 @@ fn test_insert() {
 #[test]
 fn test_iter() {
     let m = SyncInsertTable::new();
-    assert!(m.map_insert(1, 2).is_none());
-    assert!(m.map_insert(5, 3).is_none());
-    assert!(m.map_insert(2, 4).is_none());
-    assert!(m.map_insert(9, 4).is_none());
+    assert!(m.lock().map_insert(1, 2).is_none());
+    assert!(m.lock().map_insert(5, 3).is_none());
+    assert!(m.lock().map_insert(2, 4).is_none());
+    assert!(m.lock().map_insert(9, 4).is_none());
 
     pin(|pin| {
         let mut v: Vec<(i32, i32)> = m.read(pin).iter().map(|i| *i).collect();
@@ -72,12 +72,12 @@ fn test_iter() {
 #[test]
 fn test_insert_conflicts() {
     let m = SyncInsertTable::new_with(RandomState::default(), 4);
-    assert!(m.map_insert(1, 2).is_none());
-    assert!(m.map_insert(5, 3).is_none());
-    assert!(m.map_insert(9, 4).is_none());
-    assert_eq!(m.map_get(&9).unwrap(), 4);
-    assert_eq!(m.map_get(&5).unwrap(), 3);
-    assert_eq!(m.map_get(&1).unwrap(), 2);
+    assert!(m.lock().map_insert(1, 2).is_none());
+    assert!(m.lock().map_insert(5, 3).is_none());
+    assert!(m.lock().map_insert(9, 4).is_none());
+    assert_eq!(*m.lock().read().map_get(&9).unwrap(), 4);
+    assert_eq!(*m.lock().read().map_get(&5).unwrap(), 3);
+    assert_eq!(*m.lock().read().map_get(&1).unwrap(), 2);
 
     release();
 }
@@ -86,16 +86,16 @@ fn test_insert_conflicts() {
 fn test_expand() {
     let m = SyncInsertTable::new();
 
-    assert_eq!(m.len(), 0);
+    assert_eq!(m.lock().read().len(), 0);
 
     let mut i = 0;
     let old_raw_cap = unsafe { m.current().info().buckets() };
     while old_raw_cap == unsafe { m.current().info().buckets() } {
-        m.map_insert(i, i);
+        m.lock().map_insert(i, i);
         i += 1;
     }
 
-    assert_eq!(m.len(), i);
+    assert_eq!(m.lock().read().len(), i);
 
     release();
 }
@@ -103,11 +103,11 @@ fn test_expand() {
 #[test]
 fn test_find() {
     let m = SyncInsertTable::new();
-    assert!(m.map_get(&1).is_none());
-    m.map_insert(1, 2);
-    match m.map_get(&1) {
+    assert!(m.lock().read().map_get(&1).is_none());
+    m.lock().map_insert(1, 2);
+    match m.lock().read().map_get(&1) {
         None => panic!(),
-        Some(v) => assert_eq!(v, 2),
+        Some(v) => assert_eq!(*v, 2),
     }
 
     release();
@@ -119,24 +119,24 @@ fn test_capacity_not_less_than_len() {
     let mut item = 0;
 
     for _ in 0..116 {
-        a.map_insert(item, 0);
+        a.lock().map_insert(item, 0);
         item += 1;
     }
 
     pin(|pin| {
-        assert!(a.read(pin).capacity() > a.len());
+        assert!(a.read(pin).capacity() > a.read(pin).len());
 
-        let free = a.read(pin).capacity() - a.len();
+        let free = a.read(pin).capacity() - a.read(pin).len();
         for _ in 0..free {
-            a.map_insert(item, 0);
+            a.lock().map_insert(item, 0);
             item += 1;
         }
 
-        assert_eq!(a.len(), a.read(pin).capacity());
+        assert_eq!(a.read(pin).len(), a.read(pin).capacity());
 
         // Insert at capacity should cause allocation.
-        a.map_insert(item, 0);
-        assert!(a.read(pin).capacity() > a.len());
+        a.lock().map_insert(item, 0);
+        assert!(a.read(pin).capacity() > a.read(pin).len());
     });
 
     release();
@@ -190,7 +190,7 @@ fn test_interning(intern: impl Fn(&SyncInsertTable<(u64, u64)>, u64, u64, Pin<'_
         s.write_u64(i);
         let s = s.finish();
         if s % 100 > (100 - HIT_RATE) {
-            test.map_insert(i, i * 2);
+            test.lock().map_insert(i, i * 2);
             control.insert(i, i * 2);
         }
     }
