@@ -4,6 +4,22 @@ use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 
 #[test]
+fn test_iter() {
+    let mut m = SyncPushVec::new();
+    m.write().push(1);
+    m.write().push(2);
+    assert_eq!(
+        m.write()
+            .read()
+            .as_slice()
+            .iter()
+            .copied()
+            .collect::<Vec<i32>>(),
+        vec![1, 2]
+    );
+}
+
+#[test]
 fn test_high_align() {
     #[repr(align(128))]
     #[derive(Clone)]
@@ -23,11 +39,11 @@ fn test_low_align() {
 #[test]
 fn test_insert() {
     let m = SyncPushVec::new();
-    assert_eq!(m.len(), 0);
+    assert_eq!(m.lock().read().len(), 0);
     m.lock().push(2);
-    assert_eq!(m.len(), 1);
+    assert_eq!(m.lock().read().len(), 1);
     m.lock().push(5);
-    assert_eq!(m.len(), 2);
+    assert_eq!(m.lock().read().len(), 2);
     assert_eq!(*m.lock().read().get(0).unwrap(), 2);
     assert_eq!(*m.lock().read().get(1).unwrap(), 5);
 
@@ -38,7 +54,7 @@ fn test_insert() {
 fn test_expand() {
     let m = SyncPushVec::new();
 
-    assert_eq!(m.len(), 0);
+    assert_eq!(m.lock().read().len(), 0);
 
     let mut i = 0;
     let old_raw_cap = m.lock().read().capacity();
@@ -47,7 +63,7 @@ fn test_expand() {
         i += 1;
     }
 
-    assert_eq!(m.len(), i);
+    assert_eq!(m.lock().read().len(), i);
 
     release();
 }

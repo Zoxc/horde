@@ -7,6 +7,7 @@
     asm,
     core_intrinsics,
     dropck_eyepatch,
+    extend_one,
     negative_impls,
     once_cell,
     option_result_unwrap_unchecked,

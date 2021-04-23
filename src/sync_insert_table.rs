@@ -559,7 +559,7 @@ unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
 }
 
 unsafe impl<T: Send, S> Send for SyncInsertTable<T, S> {}
-unsafe impl<T: Send, S> Sync for SyncInsertTable<T, S> {}
+unsafe impl<T: Sync, S> Sync for SyncInsertTable<T, S> {}
 
 impl<T, S: Default> Default for SyncInsertTable<T, S> {
     #[inline]

@@ -1,3 +1,5 @@
+//! A contiguous push-only array type with lock-free reads.
+
 use crate::{
     collect::{pin, Pin},
     scopeguard::guard,
@@ -58,6 +60,7 @@ impl<'a, T> DerefMut for LockedWrite<'a, T> {
     }
 }
 
+/// A contiguous push-only array type with lock-free reads.
 pub struct SyncPushVec<T> {
     current: AtomicPtr<TableInfo>,
 
@@ -269,7 +272,7 @@ unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
 }
 
 unsafe impl<T: Send> Send for SyncPushVec<T> {}
-unsafe impl<T: Send> Sync for SyncPushVec<T> {}
+unsafe impl<T: Sync> Sync for SyncPushVec<T> {}
 
 impl<T> Default for SyncPushVec<T> {
     #[inline]
@@ -279,11 +282,17 @@ impl<T> Default for SyncPushVec<T> {
 }
 
 impl<T> SyncPushVec<T> {
+    /// Constructs a new, empty vector with zero capacity.
+    ///
+    /// The vector will not allocate until elements are pushed onto it.
     #[inline]
     pub fn new() -> Self {
         Self::with_capacity(0)
     }
 
+    /// Constructs a new, empty vector with the specified capacity.
+    ///
+    /// The vector will be able to hold exactly `capacity` elements without reallocating. If `capacity` is 0, the vector will not allocate.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -302,45 +311,36 @@ impl<T> SyncPushVec<T> {
         }
     }
 
-    /// Gets a mutable reference to an element in the table.
-    #[inline]
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        let table = self.current();
-        unsafe {
-            if index < table.info().items.load(Ordering::Acquire) {
-                Some(&mut *table.data(index))
-            } else {
-                None
-            }
-        }
-    }
-
+    /// Gets a reference to the underlying mutex that protects writes.
     #[inline]
     pub fn mutex(&self) -> &Mutex<()> {
         &self.lock
     }
 
+    /// Creates a [Read] handle from a pinned region.
+    ///
+    /// Use [crate::collect::pin] to get a `Pin` instance.
     #[inline]
-    pub fn read<'a>(&'a self, _pin: Pin<'a>) -> Read<'a, T> {
+    pub fn read<'a>(&'a self, pin: Pin<'a>) -> Read<'a, T> {
+        let _pin = pin;
         Read { table: self }
     }
 
+    /// Creates a [Write] handle without checking for exclusive access.
+    ///
+    /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T> {
         Write { table: self }
     }
 
+    /// Creates a [Write] handle from a mutable reference.
     #[inline]
     pub fn write(&mut self) -> Write<'_, T> {
         Write { table: self }
     }
 
-    /// Returns the number of elements in the table.
-    #[inline]
-    pub fn len(&self) -> usize {
-        pin(|pin| self.read(pin).len())
-    }
-
+    /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, T> {
         LockedWrite {
@@ -349,6 +349,7 @@ impl<T> SyncPushVec<T> {
         }
     }
 
+    /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
     #[inline]
     pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, T> {
         // Verify that we are target of the guard
@@ -361,6 +362,12 @@ impl<T> SyncPushVec<T> {
             table: Write { table: self },
             _guard: guard,
         }
+    }
+
+    /// Extracts a mutable slice of the entire vector.
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { &mut *(self.current().slice() as *mut [T]) }
     }
 
     #[inline]
@@ -437,6 +444,23 @@ impl<'a, T: Send + Clone> Write<'a, T> {
         }
     }
 
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        let table = self.table.current();
+        unsafe {
+            let required = table
+                .info()
+                .items
+                .load(Ordering::Relaxed)
+                .checked_add(additional)
+                .expect("capacity overflow");
+
+            if table.info().capacity < required {
+                self.expand_by(additional);
+            }
+        }
+    }
+
     #[cold]
     #[inline(never)]
     fn expand_by_one(&mut self) -> TableRef<T> {
@@ -493,6 +517,27 @@ impl<'a, T: Send + Clone> Write<'a, T> {
         });
 
         new_table
+    }
+}
+
+impl<T: Clone + Send> Extend<T> for Write<'_, T> {
+    #[inline]
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let iter = iter.into_iter();
+        self.reserve(iter.size_hint().0);
+        iter.for_each(|v| {
+            self.push(v);
+        });
+    }
+
+    #[inline]
+    fn extend_one(&mut self, item: T) {
+        self.push(item);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
     }
 }
 
