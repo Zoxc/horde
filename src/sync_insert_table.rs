@@ -964,10 +964,13 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
     #[inline]
     pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
         let table = self.table.current();
+        self.reserve_one(SyncInsertTable::map_hasher);
         match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
             Ok(_) => Some((k, v)),
             Err(potential) => {
-                potential.insert_new(self, hash, (k, v), SyncInsertTable::map_hasher);
+                unsafe {
+                    potential.insert_new_unchecked(self, hash, (k, v));
+                };
                 None
             }
         }
@@ -999,14 +1002,30 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
     }
 }
 
-/// Represents where an value would be if inserted.
-#[derive(Debug)]
+/// Represents where a value would be if inserted.
+#[derive(Copy, Clone, Debug)]
 pub struct PotentialSlot {
     index: usize,
     bucket_mask: usize,
 }
 
 impl PotentialSlot {
+    #[inline]
+    unsafe fn is_empty<'a, T>(&self, table: TableRef<T>) -> bool {
+        let bucket_mask = table.info().bucket_mask;
+        let index = self.index;
+
+        // Check that we have not expanded by checking the bucket_mask
+        // and also check that the index is in bounds for safety.
+        if likely(bucket_mask == self.bucket_mask && index <= bucket_mask) {
+            if likely(*table.info().ctrl(index) == EMPTY) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Gets a reference to an element in the table.
     #[inline]
     pub fn get<'a, T, S>(
@@ -1016,16 +1035,8 @@ impl PotentialSlot {
         eq: impl FnMut(&T) -> bool,
     ) -> Option<&'a T> {
         unsafe {
-            let table = table.table.current();
-            let bucket_mask = table.info().bucket_mask;
-            let index = self.index;
-
-            // Verify that we have not expanded by checking the bucket_mask
-            // and also check that the index is in bounds for safety.
-            if likely(bucket_mask == self.bucket_mask && index <= bucket_mask) {
-                if likely(*table.info().ctrl(index) == EMPTY) {
-                    return None;
-                }
+            if likely(self.is_empty(table.table.current())) {
+                return None;
             }
         }
 
@@ -1040,18 +1051,8 @@ impl PotentialSlot {
         eq: impl FnMut(&T) -> bool,
     ) -> Result<&'a T, PotentialSlot> {
         unsafe {
-            let table = table.table.current();
-            let bucket_mask = table.info().bucket_mask;
-            let index = self.index;
-
-            // Verify that we have not expanded by checking the bucket_mask
-            // and also check that the index is in bounds for safety.
-            if likely(
-                bucket_mask == self.bucket_mask, /*&& index <= bucket_mask*/
-            ) {
-                if likely(*table.info().ctrl(index) == EMPTY) {
-                    return Err(self);
-                }
+            if likely(self.is_empty(table.table.current())) {
+                return Err(self);
             }
         }
 
@@ -1071,16 +1072,10 @@ impl PotentialSlot {
     ) -> &'a T {
         unsafe {
             let mut table = table.table.current();
-            let bucket_mask = table.info().bucket_mask;
-            let index = self.index;
 
-            // Verify that we have not expanded by checking the bucket_mask
-            // and also check that the index is in bounds for safety.
-            if likely(
-                bucket_mask == self.bucket_mask
-                    && index <= bucket_mask
-                    && table.info().growth_left != 0,
-            ) {
+            if likely(self.is_empty(table) && table.info().growth_left > 0) {
+                let index = self.index;
+
                 debug_assert_eq!(index, table.info().find_insert_slot(hash));
 
                 if likely(*table.info().ctrl(index) == EMPTY) {
@@ -1109,20 +1104,10 @@ impl PotentialSlot {
     ) -> Option<&'a T> {
         unsafe {
             let mut table = table.table.current();
-            let bucket_mask = table.info().bucket_mask;
-            let index = self.index;
 
-            // Verify that we have not expanded by checking the bucket_mask
-            // and also check that the index is in bounds for safety.
-            if unlikely(
-                bucket_mask != self.bucket_mask
-                    || index > bucket_mask
-                    || table.info().growth_left == 0,
-            ) {
-                return None;
-            }
+            if likely(self.is_empty(table) && table.info().growth_left > 0) {
+                let index = self.index;
 
-            if likely(*table.info().ctrl(index) == EMPTY) {
                 let bucket = table.bucket(index);
                 bucket.write(value);
 
@@ -1133,6 +1118,30 @@ impl PotentialSlot {
                 None
             }
         }
+    }
+
+    /// Inserts a new element into the table, and returns a reference to it.
+    ///
+    /// This does not check if the given element already exists in the table.
+    #[inline]
+    pub unsafe fn insert_new_unchecked<'a, T, S>(
+        &self,
+        table: &mut Write<'a, T, S>,
+        hash: u64,
+        value: T,
+    ) -> &'a T {
+        let mut table = table.table.current();
+        let index = self.index;
+
+        debug_assert!(self.is_empty(table));
+        debug_assert!(table.info().growth_left > 0);
+
+        let bucket = table.bucket(index);
+        bucket.write(value);
+
+        table.info_mut().record_item_insert_at(index, hash);
+
+        bucket.as_ref()
     }
 }
 
