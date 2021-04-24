@@ -159,9 +159,6 @@ struct TableInfo {
 
     // Number of elements that can be inserted before we need to grow the table
     growth_left: AtomicUsize,
-
-    // Number of elements in the table, only really used by len()
-    items: AtomicUsize,
 }
 
 impl TableInfo {
@@ -174,6 +171,12 @@ impl TableInfo {
     #[inline]
     pub fn buckets(&self) -> usize {
         self.bucket_mask + 1
+    }
+
+    /// Returns the number of buckets in the table.
+    #[inline]
+    pub fn items(&self) -> usize {
+        bucket_mask_to_capacity(self.bucket_mask) - self.growth_left.load(Ordering::Acquire)
     }
 
     /// Returns a pointer to a control byte.
@@ -242,8 +245,6 @@ impl TableInfo {
             Ordering::Release,
         );
         self.set_ctrl_release(index, h2(hash));
-        self.items
-            .store(self.items.load(Ordering::Relaxed) + 1, Ordering::Release);
     }
 
     /// Searches for an empty or deleted bucket which is suitable for inserting
@@ -321,7 +322,6 @@ impl<T> TableRef<T> {
             info: TableInfo {
                 bucket_mask: 0,
                 growth_left: AtomicUsize::new(0),
-                items: AtomicUsize::new(0),
             },
             control_bytes: [Group::EMPTY; 1],
         };
@@ -363,7 +363,6 @@ impl<T> TableRef<T> {
             *result.info_mut() = TableInfo {
                 bucket_mask: bucket_count - 1,
                 growth_left: AtomicUsize::new(bucket_mask_to_capacity(bucket_count - 1)),
-                items: AtomicUsize::new(0),
             };
 
             result
@@ -377,7 +376,7 @@ impl<T> TableRef<T> {
 
     #[inline]
     unsafe fn free(self) {
-        if self.info().items.load(Ordering::Relaxed) > 0 {
+        if self.info().bucket_mask > 0 {
             if mem::needs_drop::<T>() {
                 for item in self.iter() {
                     item.drop();
@@ -432,7 +431,7 @@ impl<T> TableRef<T> {
         };
         RawIter {
             iter: RawIterRange::new(self.info().ctrl(0), data, self.info().buckets()),
-            items: self.info().items.load(Ordering::Acquire),
+            items: self.info().items(),
         }
     }
 
@@ -546,7 +545,6 @@ impl<T: Clone> TableRef<T> {
                 count += 1;
             }
 
-            *new_table.info_mut().items.get_mut() = count;
             *new_table.info_mut().growth_left.get_mut() -= count;
 
             *guard = None;
@@ -774,7 +772,7 @@ impl<'a, T, S> Read<'a, T, S> {
     /// Returns the number of elements in the table.
     #[inline]
     pub fn len(self) -> usize {
-        unsafe { self.table.current().info().items.load(Ordering::Acquire) }
+        unsafe { self.table.current().info().items() }
     }
 
     /// An iterator visiting all key-value pairs in arbitrary order.
@@ -919,11 +917,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         let table = self.table.current();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
-        let new_items = match unsafe { table.info() }
-            .items
-            .load(Ordering::Relaxed)
-            .checked_add(additional)
-        {
+        let new_items = match unsafe { table.info() }.items().checked_add(additional) {
             Some(new_items) => new_items,
             None => panic!("capacity overflow"),
         };
@@ -933,7 +927,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         let new_capacity = usize::max(new_items, full_capacity + 1);
 
         unsafe {
-            debug_assert!(table.info().items.load(Ordering::Relaxed) <= new_capacity);
+            debug_assert!(table.info().items() <= new_capacity);
         }
 
         let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
