@@ -224,6 +224,9 @@ impl<T: Clone> TableRef<T> {
     /// current table into it.
     fn clone(&self, new_capacity: usize) -> TableRef<T> {
         unsafe {
+            debug_assert!(new_capacity >= self.info().capacity);
+            debug_assert!(new_capacity > 0);
+
             let mut new_table = TableRef::<T>::allocate(new_capacity);
 
             let mut guard = guard(Some(new_table), |new_table| {

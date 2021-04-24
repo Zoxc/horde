@@ -131,6 +131,44 @@ fn intern4(b: &mut Bencher) {
     })
 }
 
+#[inline(never)]
+fn intern5_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+    let hash = table.hash_any(&k);
+    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
+        Ok(v) => return v.1,
+        Err(p) => p,
+    };
+
+    let mut write = table.lock();
+
+    write.reserve_one(SyncInsertTable::hasher);
+
+    let p = p.refresh(write.read(), hash, |v| v.0 == k);
+
+    match p {
+        Ok(v) => v.1,
+        Err(p) => {
+            unsafe { p.insert_new_unchecked(&mut write, hash, (k, v)) };
+            v
+        }
+    }
+}
+
+#[bench]
+fn intern5(b: &mut Bencher) {
+    let m = intern_map();
+
+    pin(|pin| {
+        b.iter(|| {
+            let m2 = m.read(pin).clone(SyncInsertTable::hasher);
+            for i in 0..50000 {
+                let mut result = intern5_value(&m2, i, i * 2, pin);
+                black_box(&mut result);
+            }
+        })
+    })
+}
+
 #[bench]
 fn insert(b: &mut Bencher) {
     #[inline(never)]

@@ -10,7 +10,6 @@ use crate::{
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
-use std::ops::DerefMut;
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
@@ -25,6 +24,7 @@ use std::{
 use std::{borrow::Borrow, hash::Hash};
 use std::{collections::hash_map::RandomState, sync::Arc};
 use std::{ops::Deref, sync::atomic::AtomicPtr};
+use std::{ops::DerefMut, sync::atomic::AtomicUsize};
 
 mod code;
 mod tests;
@@ -158,10 +158,10 @@ struct TableInfo {
     bucket_mask: usize,
 
     // Number of elements that can be inserted before we need to grow the table
-    growth_left: usize,
+    growth_left: AtomicUsize,
 
     // Number of elements in the table, only really used by len()
-    items: usize,
+    items: AtomicUsize,
 }
 
 impl TableInfo {
@@ -236,10 +236,14 @@ impl TableInfo {
     }
 
     #[inline]
-    unsafe fn record_item_insert_at(&mut self, index: usize, hash: u64) {
-        self.growth_left -= 1;
+    unsafe fn record_item_insert_at(&self, index: usize, hash: u64) {
+        self.growth_left.store(
+            self.growth_left.load(Ordering::Relaxed) - 1,
+            Ordering::Release,
+        );
         self.set_ctrl_release(index, h2(hash));
-        self.items += 1;
+        self.items
+            .store(self.items.load(Ordering::Relaxed) + 1, Ordering::Release);
     }
 
     /// Searches for an empty or deleted bucket which is suitable for inserting
@@ -313,17 +317,17 @@ impl<T> TableRef<T> {
             control_bytes: [Group; 1],
         }
 
-        let empty: &'static EmptyTable = &EmptyTable {
+        static EMPTY: EmptyTable = EmptyTable {
             info: TableInfo {
                 bucket_mask: 0,
-                growth_left: 0,
-                items: 0,
+                growth_left: AtomicUsize::new(0),
+                items: AtomicUsize::new(0),
             },
             control_bytes: [Group::EMPTY; 1],
         };
 
         Self {
-            data: unsafe { NonNull::new_unchecked(empty as *const EmptyTable as *mut TableInfo) },
+            data: unsafe { NonNull::new_unchecked(&EMPTY as *const EmptyTable as *mut TableInfo) },
             marker: PhantomData,
         }
     }
@@ -358,8 +362,8 @@ impl<T> TableRef<T> {
         unsafe {
             *result.info_mut() = TableInfo {
                 bucket_mask: bucket_count - 1,
-                growth_left: bucket_mask_to_capacity(bucket_count - 1),
-                items: 0,
+                growth_left: AtomicUsize::new(bucket_mask_to_capacity(bucket_count - 1)),
+                items: AtomicUsize::new(0),
             };
 
             result
@@ -373,7 +377,7 @@ impl<T> TableRef<T> {
 
     #[inline]
     unsafe fn free(self) {
-        if self.info().items > 0 {
+        if self.info().items.load(Ordering::Relaxed) > 0 {
             if mem::needs_drop::<T>() {
                 for item in self.iter() {
                     item.drop();
@@ -428,7 +432,7 @@ impl<T> TableRef<T> {
         };
         RawIter {
             iter: RawIterRange::new(self.info().ctrl(0), data, self.info().buckets()),
-            items: self.info().items,
+            items: self.info().items.load(Ordering::Acquire),
         }
     }
 
@@ -514,14 +518,15 @@ impl<T: Clone> TableRef<T> {
         hasher: impl Fn(&S, &T) -> u64,
     ) -> TableRef<T> {
         unsafe {
-            let mut new_table = TableRef::allocate(buckets);
+            debug_assert!(buckets >= self.info().bucket_mask + 1);
 
-            new_table.info_mut().items = self.info().items;
-            new_table.info_mut().growth_left -= self.info().items;
+            let mut new_table = TableRef::allocate(buckets);
 
             let mut guard = guard(Some(new_table), |new_table| {
                 new_table.map(|new_table| new_table.free());
             });
+
+            let mut count = 0;
 
             // Copy all elements to the new table.
             for item in self.iter() {
@@ -537,7 +542,12 @@ impl<T: Clone> TableRef<T> {
                 let (index, _) = new_table.info().prepare_insert_slot(hash);
 
                 new_table.bucket(index).write(item);
+
+                count += 1;
             }
+
+            *new_table.info_mut().items.get_mut() = count;
+            *new_table.info_mut().growth_left.get_mut() -= count;
 
             *guard = None;
 
@@ -756,22 +766,15 @@ impl<'a, T, S> Read<'a, T, S> {
     }
 
     /// Returns the number of elements the map can hold without reallocating.
-    ///
-    /// This number is a lower bound; the table might be able to hold
-    /// more, but is guaranteed to be able to hold at least this many.
     #[inline]
     pub fn capacity(self) -> usize {
-        unsafe {
-            let table = self.table.current();
-            let info = table.info();
-            info.items + info.growth_left
-        }
+        unsafe { bucket_mask_to_capacity(self.table.current().info().bucket_mask) }
     }
 
     /// Returns the number of elements in the table.
     #[inline]
     pub fn len(self) -> usize {
-        unsafe { self.table.current().info().items }
+        unsafe { self.table.current().info().items.load(Ordering::Acquire) }
     }
 
     /// An iterator visiting all key-value pairs in arbitrary order.
@@ -880,7 +883,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         let mut table = self.table.current();
 
         unsafe {
-            if unlikely(table.info().growth_left == 0) {
+            if unlikely(table.info().growth_left.load(Ordering::Relaxed) == 0) {
                 table = self.expand_by_one(&hasher);
             }
 
@@ -889,7 +892,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
             let bucket = table.bucket(index);
             bucket.write(value);
 
-            table.info_mut().record_item_insert_at(index, hash);
+            table.info().record_item_insert_at(index, hash);
 
             bucket.as_ref()
         }
@@ -900,7 +903,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
     pub fn reserve_one(&mut self, hasher: impl Fn(&S, &T) -> u64) {
         let table = self.table.current();
 
-        if unlikely(unsafe { table.info().growth_left } == 0) {
+        if unlikely(unsafe { table.info().growth_left.load(Ordering::Relaxed) } == 0) {
             self.expand_by_one(&hasher);
         }
     }
@@ -916,7 +919,11 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         let table = self.table.current();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
-        let new_items = match unsafe { table.info() }.items.checked_add(additional) {
+        let new_items = match unsafe { table.info() }
+            .items
+            .load(Ordering::Relaxed)
+            .checked_add(additional)
+        {
             Some(new_items) => new_items,
             None => panic!("capacity overflow"),
         };
@@ -926,7 +933,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         let new_capacity = usize::max(new_items, full_capacity + 1);
 
         unsafe {
-            debug_assert!(table.info().items <= new_capacity);
+            debug_assert!(table.info().items.load(Ordering::Relaxed) <= new_capacity);
         }
 
         let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
@@ -963,8 +970,8 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
     /// Treat the table as a hash map and insert a key-value pair where `hash` is the key's hash.
     #[inline]
     pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
-        let table = self.table.current();
         self.reserve_one(SyncInsertTable::map_hasher);
+        let table = self.table.current();
         match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
             Ok(_) => Some((k, v)),
             Err(potential) => {
@@ -1011,7 +1018,7 @@ pub struct PotentialSlot {
 
 impl PotentialSlot {
     #[inline]
-    unsafe fn is_empty<'a, T>(&self, table: TableRef<T>) -> bool {
+    unsafe fn is_empty<T>(&self, table: TableRef<T>) -> bool {
         let bucket_mask = table.info().bucket_mask;
         let index = self.index;
 
@@ -1059,6 +1066,17 @@ impl PotentialSlot {
         cold_path(|| table.get_potential(hash, eq))
     }
 
+    #[inline]
+    unsafe fn insert<'a, T>(&self, table: TableRef<T>, value: T, hash: u64) -> &'a T {
+        let index = self.index;
+        let bucket = table.bucket(index);
+        bucket.write(value);
+
+        table.info().record_item_insert_at(index, hash);
+
+        bucket.as_ref()
+    }
+
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
@@ -1071,21 +1089,13 @@ impl PotentialSlot {
         hasher: impl Fn(&S, &T) -> u64,
     ) -> &'a T {
         unsafe {
-            let mut table = table.table.current();
+            let table = table.table.current();
 
-            if likely(self.is_empty(table) && table.info().growth_left > 0) {
-                let index = self.index;
+            if likely(self.is_empty(table) && table.info().growth_left.load(Ordering::Relaxed) > 0)
+            {
+                debug_assert_eq!(self.index, table.info().find_insert_slot(hash));
 
-                debug_assert_eq!(index, table.info().find_insert_slot(hash));
-
-                if likely(*table.info().ctrl(index) == EMPTY) {
-                    let bucket = table.bucket(index);
-                    bucket.write(value);
-
-                    table.info_mut().record_item_insert_at(index, hash);
-
-                    return bucket.as_ref();
-                }
+                return self.insert(table, value, hash);
             }
         }
 
@@ -1103,17 +1113,11 @@ impl PotentialSlot {
         value: T,
     ) -> Option<&'a T> {
         unsafe {
-            let mut table = table.table.current();
+            let table = table.table.current();
 
-            if likely(self.is_empty(table) && table.info().growth_left > 0) {
-                let index = self.index;
-
-                let bucket = table.bucket(index);
-                bucket.write(value);
-
-                table.info_mut().record_item_insert_at(index, hash);
-
-                Some(bucket.as_ref())
+            if likely(self.is_empty(table) && table.info().growth_left.load(Ordering::Relaxed) > 0)
+            {
+                Some(self.insert(table, value, hash))
             } else {
                 None
             }
@@ -1130,18 +1134,12 @@ impl PotentialSlot {
         hash: u64,
         value: T,
     ) -> &'a T {
-        let mut table = table.table.current();
-        let index = self.index;
+        let table = table.table.current();
 
         debug_assert!(self.is_empty(table));
-        debug_assert!(table.info().growth_left > 0);
+        debug_assert!(table.info().growth_left.load(Ordering::Relaxed) > 0);
 
-        let bucket = table.bucket(index);
-        bucket.write(value);
-
-        table.info_mut().record_item_insert_at(index, hash);
-
-        bucket.as_ref()
+        self.insert(table, value, hash)
     }
 }
 
@@ -1418,10 +1416,6 @@ impl<T> Iterator for RawIter<T> {
             self.items -= 1;
             Some(b)
         } else {
-            // We don't check against items == 0 here to allow the
-            // compiler to optimize away the item count entirely if the
-            // iterator length is never queried.
-            debug_assert_eq!(self.items, 0);
             None
         }
     }
