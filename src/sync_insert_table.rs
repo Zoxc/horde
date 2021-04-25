@@ -497,7 +497,7 @@ impl<T> TableRef<T> {
             if likely(bit.is_some()) {
                 let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
                 return Some(PotentialSlot {
-                    index: index,
+                    index,
                     bucket_mask: self.info().bucket_mask,
                 });
             } else {
@@ -517,7 +517,7 @@ impl<T: Clone> TableRef<T> {
         hasher: impl Fn(&S, &T) -> u64,
     ) -> TableRef<T> {
         unsafe {
-            debug_assert!(buckets >= self.info().bucket_mask + 1);
+            debug_assert!(buckets >= self.info().buckets());
 
             let mut new_table = TableRef::allocate(buckets);
 
@@ -665,6 +665,7 @@ impl<T, S> SyncInsertTable<T, S> {
 
     /// Creates a [Write] handle without checking for exclusive access.
     ///
+    /// # Safety
     /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T, S> {
@@ -1023,23 +1024,19 @@ impl PotentialSlot {
 
         // Check that we have not expanded by checking the bucket_mask
         // and also check that the index is in bounds for safety.
-        if likely(bucket_mask == self.bucket_mask && index <= bucket_mask) {
-            if likely(*table.info().ctrl(index) == EMPTY) {
-                return true;
-            }
-        }
-
-        false
+        bucket_mask == self.bucket_mask
+            && index <= bucket_mask
+            && *table.info().ctrl(index) == EMPTY
     }
 
     /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get<'a, T, S>(
+    pub fn get<T, S>(
         self,
-        table: Read<'a, T, S>,
+        table: Read<'_, T, S>,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
-    ) -> Option<&'a T> {
+    ) -> Option<&T> {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
                 return None;
@@ -1053,12 +1050,12 @@ impl PotentialSlot {
     /// This can be useful if there could have been insertions since the slot was derived
     /// and you want to use `try_insert_new` or `insert_new_unchecked`.
     #[inline]
-    pub fn refresh<'a, T, S>(
+    pub fn refresh<T, S>(
         self,
-        table: Read<'a, T, S>,
+        table: Read<'_, T, S>,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
-    ) -> Result<&'a T, PotentialSlot> {
+    ) -> Result<&T, PotentialSlot> {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
                 return Err(self);

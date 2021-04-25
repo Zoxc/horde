@@ -37,6 +37,7 @@ impl Pin<'_> {
     ///
     /// The closure will be called by the [collect] method.
     ///
+    /// # Safety
     /// This method is unsafe since the closure is not required to be `'static`.
     /// It's up to the caller to ensure the closure does not access freed memory.
     /// A `move` closure is recommended to avoid accidental references to stack variables.
