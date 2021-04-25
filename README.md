@@ -1,7 +1,7 @@
 [![Build Status](https://img.shields.io/github/workflow/status/Zoxc/concurrent/build?label=build)](https://github.com/Zoxc/concurrent/actions/workflows/build.yaml)
 [![Documentation](https://img.shields.io/github/workflow/status/Zoxc/concurrent/docs?label=docs)](https://zoxc.github.io/concurrent/concurrent/)
 
-A crate that contains `SyncInsertTable` and `SyncPushVec` both which offers lock-free reads, but no deletion. They use quiescent state based reclamation for which an API is also available. `SyncInsertTable` is based on the [hashbrown](https://crates.io/crates/hashbrown) crate and has similar lookup performance.
+A crate that contains `SyncInsertTable` and `SyncPushVec`, both which offers lock-free reads, but no deletion. Their API is intensionally minimal, but efficient. They use quiescent state based reclamation for which an API is also available. `SyncInsertTable` is based on the [hashbrown](https://crates.io/crates/hashbrown) crate and has similar lookup performance.
 
 ## License
 

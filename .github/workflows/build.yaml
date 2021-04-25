@@ -9,9 +9,9 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
-  
+
 jobs:
-  rustdoc:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -30,10 +30,7 @@ jobs:
       run: cargo fmt --all -- --check
 
     - name: Clippy
-      uses: actions-rs/clippy-check@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        args: --all-features
+      run: cargo clippy
 
     - name: Test
       run: cargo test --all-targets
