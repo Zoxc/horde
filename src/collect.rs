@@ -133,6 +133,13 @@ fn data_init() -> *const Data {
     data
 }
 
+// TODO: Can this be made into an OwnedPin type which restores the state when dropped?
+// Would need to check that only one of them is around?
+// Can we keep `pin` in that case? Could drop `OwnedPin` inside `pin`?
+// Using seperate flags for both of them might work.
+// Won't be optimized away like `pin`
+// Use a reference count?
+
 /// Marks the current thread as pinned and returns a proof of that to the closure.
 ///
 /// This adds the current thread to the set of threads that needs to regularly call [collect]
@@ -160,8 +167,11 @@ pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
 /// This will panic if called while the current thread is pinned.
 pub fn release() {
     let data = unsafe { &*(hide(data())) };
-    data.assert_unpinned();
+    if cfg!(debug_assertions) {
+        data.assert_unpinned();
+    }
     if data.registered.get() {
+        data.assert_unpinned();
         data.registered.set(false);
         COLLECTOR.lock().unregister();
     }
@@ -174,11 +184,15 @@ pub fn release() {
 /// This will panic if called while a thread is pinned.
 pub fn collect() {
     let data = unsafe { &*(hide(data())) };
-    data.assert_unpinned();
+    if cfg!(debug_assertions) {
+        data.assert_unpinned();
+    }
     let new = DEFERRED.load(Ordering::Acquire);
     if unlikely(new != data.seen_deferred.get()) {
         data.seen_deferred.set(new);
         cold_path(|| {
+            data.assert_unpinned();
+
             let callbacks = COLLECTOR.lock().quiet();
 
             if let Some(callbacks) = callbacks {

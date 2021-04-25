@@ -38,6 +38,23 @@ fn test_create_capacity_zero() {
 }
 
 #[test]
+fn test_replace() {
+    let m = SyncInsertTable::new();
+    m.lock().map_insert(2, 7);
+    m.lock().map_insert(5, 3);
+    m.lock()
+        .replace(vec![(3, 4)], 0, SyncInsertTable::map_hasher);
+    assert_eq!(*m.lock().read().map_get(&3).unwrap(), 4);
+    assert_eq!(m.lock().read().map_get(&2), None);
+    assert_eq!(m.lock().read().map_get(&5), None);
+    m.lock().replace(vec![], 0, SyncInsertTable::map_hasher);
+    assert_eq!(m.lock().read().map_get(&3), None);
+    assert_eq!(m.lock().read().map_get(&2), None);
+    assert_eq!(m.lock().read().map_get(&5), None);
+    release();
+}
+
+#[test]
 fn test_insert() {
     let m = SyncInsertTable::new();
     assert_eq!(m.lock().read().len(), 0);

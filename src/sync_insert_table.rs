@@ -13,7 +13,7 @@ use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
-    fmt,
+    cmp, fmt,
     hash::BuildHasher,
     intrinsics::{likely, unlikely},
     iter::FusedIterator,
@@ -392,6 +392,70 @@ impl<T> TableRef<T> {
         }
     }
 
+    fn from_maybe_empty_iter<
+        S,
+        I: Iterator<Item = T>,
+        H: Fn(&S, &T) -> u64,
+        const CHECK_LEN: bool,
+    >(
+        iter: I,
+        iter_size: usize,
+        capacity: usize,
+        hash_builder: &S,
+        hasher: H,
+    ) -> TableRef<T> {
+        if iter_size == 0 {
+            TableRef::empty()
+        } else {
+            let buckets =
+                capacity_to_buckets(cmp::max(iter_size, capacity)).expect("capacity overflow");
+            unsafe {
+                TableRef::from_iter::<_, _, _, CHECK_LEN>(iter, buckets, hash_builder, hasher)
+            }
+        }
+    }
+
+    /// Allocates a new table and fills it with the content of an iterator
+    unsafe fn from_iter<S, I: Iterator<Item = T>, H: Fn(&S, &T) -> u64, const CHECK_LEN: bool>(
+        iter: I,
+        buckets: usize,
+        hash_builder: &S,
+        hasher: H,
+    ) -> TableRef<T> {
+        let mut new_table = TableRef::allocate(buckets);
+
+        let mut guard = guard(Some(new_table), |new_table| {
+            new_table.map(|new_table| new_table.free());
+        });
+
+        let mut growth_left = *new_table.info_mut().growth_left.get_mut();
+
+        // Copy all elements to the new table.
+        for item in iter {
+            if CHECK_LEN && growth_left == 0 {
+                break;
+            }
+
+            // This may panic.
+            let hash = hasher(hash_builder, &item);
+
+            // We can use a simpler version of insert() here since:
+            // - we know there is enough space in the table.
+            // - all elements are unique.
+            let (index, _) = new_table.info().prepare_insert_slot(hash);
+
+            new_table.bucket(index).write(item);
+
+            growth_left -= 1;
+        }
+
+        *new_table.info_mut().growth_left.get_mut() = growth_left;
+
+        *guard = None;
+
+        new_table
+    }
+
     unsafe fn info(&self) -> &TableInfo {
         self.data.as_ref()
     }
@@ -491,15 +555,15 @@ impl<T> TableRef<T> {
         &self,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
-    ) -> Result<Bucket<T>, PotentialSlot> {
+    ) -> Result<Bucket<T>, PotentialSlot<'static>> {
         self.search(hash, eq, |group, probe_seq| {
             let bit = group.match_empty().lowest_set_bit();
             if likely(bit.is_some()) {
                 let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
-                return Some(PotentialSlot {
+                Some(PotentialSlot {
+                    table_info: &*self.data.as_ptr(),
                     index,
-                    bucket_mask: self.info().bucket_mask,
-                });
+                })
             } else {
                 None
             }
@@ -518,37 +582,12 @@ impl<T: Clone> TableRef<T> {
     ) -> TableRef<T> {
         debug_assert!(buckets >= self.info().buckets());
 
-        let mut new_table = TableRef::allocate(buckets);
-
-        let mut guard = guard(Some(new_table), |new_table| {
-            new_table.map(|new_table| new_table.free());
-        });
-
-        let mut count = 0;
-
-        // Copy all elements to the new table.
-        for item in self.iter() {
-            // This may panic.
-            let hash = hasher(hash_builder, item.as_ref());
-
-            // Clone may panic
-            let item = item.as_ref().clone();
-
-            // We can use a simpler version of insert() here since:
-            // - we know there is enough space in the table.
-            // - all elements are unique.
-            let (index, _) = new_table.info().prepare_insert_slot(hash);
-
-            new_table.bucket(index).write(item);
-
-            count += 1;
-        }
-
-        *new_table.info_mut().growth_left.get_mut() -= count;
-
-        *guard = None;
-
-        new_table
+        TableRef::from_iter::<_, _, _, false>(
+            self.iter().map(|bucket| bucket.as_ref().clone()),
+            buckets,
+            hash_builder,
+            hasher,
+        )
     }
 }
 
@@ -740,8 +779,7 @@ impl<'a, T, S> Read<'a, T, S> {
         self,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
-    ) -> Result<&'a T, PotentialSlot> {
-        // Avoid `Option::map` because it bloats LLVM IR.
+    ) -> Result<&'a T, PotentialSlot<'a>> {
         match unsafe { self.table.current().find_potential(hash, eq) } {
             Ok(bucket) => Ok(unsafe { bucket.as_ref() }),
             Err(slot) => Err(slot),
@@ -932,6 +970,16 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 
         let new_table = unsafe { table.clone(&self.table.hash_builder, buckets, hasher) };
 
+        self.replace_table(new_table);
+
+        new_table
+    }
+}
+
+impl<T: Send, S> Write<'_, T, S> {
+    fn replace_table(&mut self, new_table: TableRef<T>) {
+        let table = self.table.current();
+
         self.table
             .current
             .store(new_table.data.as_ptr(), Ordering::Release);
@@ -948,8 +996,41 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
                 pin.defer_unchecked(move || destroy.run());
             }
         });
+    }
 
-        new_table
+    /// Replaces the content of the table with the content of the iterator.
+    /// All the elements must be unique.
+    /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
+    #[inline]
+    pub fn replace<I: IntoIterator<Item = T>>(
+        &mut self,
+        iter: I,
+        capacity: usize,
+        hasher: impl Fn(&S, &T) -> u64,
+    ) {
+        let iter = iter.into_iter();
+
+        let table = if let Some(max) = iter.size_hint().1 {
+            TableRef::from_maybe_empty_iter::<_, _, _, true>(
+                iter,
+                max,
+                capacity,
+                &self.table.hash_builder,
+                hasher,
+            )
+        } else {
+            let elements: Vec<_> = iter.collect();
+            let len = elements.len();
+            TableRef::from_maybe_empty_iter::<_, _, _, false>(
+                elements.into_iter(),
+                len,
+                capacity,
+                &self.table.hash_builder,
+                hasher,
+            )
+        };
+
+        self.replace_table(table);
     }
 }
 
@@ -1002,23 +1083,22 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
 /// and this must be a handle to the same table `get_potential` was called on. Operations also must
 /// be on the same element as given to `get_potential`. The operations have a fast path for when
 /// the element is still missing.
-#[derive(Copy, Clone, Debug)]
-pub struct PotentialSlot {
+#[derive(Copy, Clone)]
+pub struct PotentialSlot<'a> {
+    table_info: &'a TableInfo,
     index: usize,
-    bucket_mask: usize,
 }
 
-impl PotentialSlot {
+impl<'a> PotentialSlot<'a> {
     #[inline]
     unsafe fn is_empty<T>(self, table: TableRef<T>) -> bool {
-        let bucket_mask = table.info().bucket_mask;
+        let table_info = table.info() as *const TableInfo;
         let index = self.index;
 
-        // Check that we have not expanded by checking the bucket_mask
-        // and also check that the index is in bounds for safety.
-        bucket_mask == self.bucket_mask
-            && index <= bucket_mask
-            && *table.info().ctrl(index) == EMPTY
+        // Check that we are still looking at the same table,
+        // otherwise our index could be out of date due to expansion
+        // or a `replace` call.
+        table_info == (self.table_info as *const TableInfo) && *self.table_info.ctrl(index) == EMPTY
     }
 
     /// Gets a reference to an element in the table.
@@ -1044,10 +1124,10 @@ impl PotentialSlot {
     #[inline]
     pub fn refresh<T, S>(
         self,
-        table: Read<'_, T, S>,
+        table: Read<'a, T, S>,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
-    ) -> Result<&T, PotentialSlot> {
+    ) -> Result<&T, PotentialSlot<'a>> {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
                 return Err(self);
@@ -1058,7 +1138,7 @@ impl PotentialSlot {
     }
 
     #[inline]
-    unsafe fn insert<'a, T>(self, table: TableRef<T>, value: T, hash: u64) -> &'a T {
+    unsafe fn insert<'b, T>(self, table: TableRef<T>, value: T, hash: u64) -> &'b T {
         let index = self.index;
         let bucket = table.bucket(index);
         bucket.write(value);
@@ -1072,13 +1152,13 @@ impl PotentialSlot {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new<'a, T: Send + Clone, S>(
+    pub fn insert_new<'b, T: Send + Clone, S>(
         self,
-        table: &mut Write<'a, T, S>,
+        table: &mut Write<'b, T, S>,
         hash: u64,
         value: T,
         hasher: impl Fn(&S, &T) -> u64,
-    ) -> &'a T {
+    ) -> &'b T {
         unsafe {
             let table = table.table.current();
 
@@ -1099,12 +1179,12 @@ impl PotentialSlot {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn try_insert_new<'a, T, S>(
+    pub fn try_insert_new<'b, T, S>(
         self,
-        table: &mut Write<'a, T, S>,
+        table: &mut Write<'b, T, S>,
         hash: u64,
         value: T,
-    ) -> Option<&'a T> {
+    ) -> Option<&'b T> {
         unsafe {
             let table = table.table.current();
 
@@ -1127,14 +1207,15 @@ impl PotentialSlot {
     /// The following conditions must hold for this function to be safe:
     /// - `table` must be the same table that `self` is derived from.
     /// - `hash` and `value` must match the value used when `self` was derived.
-    /// - There must not have been any insertions to the table since `self` was derived.
+    /// - There must not have been any insertions or `replace` calls to the table since `self`
+    ///   was derived.
     #[inline]
-    pub unsafe fn insert_new_unchecked<'a, T, S>(
+    pub unsafe fn insert_new_unchecked<'b, T, S>(
         self,
-        table: &mut Write<'a, T, S>,
+        table: &mut Write<'b, T, S>,
         hash: u64,
         value: T,
-    ) -> &'a T {
+    ) -> &'b T {
         let table = table.table.current();
 
         debug_assert!(self.is_empty(table));
