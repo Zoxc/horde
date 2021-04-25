@@ -51,6 +51,19 @@ fn test_insert() {
 }
 
 #[test]
+fn test_replace() {
+    let m = SyncPushVec::new();
+    m.lock().push(2);
+    m.lock().push(5);
+    assert_eq!(m.lock().read().as_slice(), [2, 5]);
+    m.lock().replace(vec![3].into_iter(), 0);
+    assert_eq!(m.lock().read().as_slice(), [3]);
+    m.lock().replace(vec![].into_iter(), 0);
+    assert_eq!(m.lock().read().as_slice(), []);
+    release();
+}
+
+#[test]
 fn test_expand() {
     let m = SyncPushVec::new();
 

@@ -510,47 +510,45 @@ impl<T> TableRef<T> {
 impl<T: Clone> TableRef<T> {
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn clone<S>(
+    unsafe fn clone<S>(
         &self,
         hash_builder: &S,
         buckets: usize,
         hasher: impl Fn(&S, &T) -> u64,
     ) -> TableRef<T> {
-        unsafe {
-            debug_assert!(buckets >= self.info().buckets());
+        debug_assert!(buckets >= self.info().buckets());
 
-            let mut new_table = TableRef::allocate(buckets);
+        let mut new_table = TableRef::allocate(buckets);
 
-            let mut guard = guard(Some(new_table), |new_table| {
-                new_table.map(|new_table| new_table.free());
-            });
+        let mut guard = guard(Some(new_table), |new_table| {
+            new_table.map(|new_table| new_table.free());
+        });
 
-            let mut count = 0;
+        let mut count = 0;
 
-            // Copy all elements to the new table.
-            for item in self.iter() {
-                // This may panic.
-                let hash = hasher(hash_builder, item.as_ref());
+        // Copy all elements to the new table.
+        for item in self.iter() {
+            // This may panic.
+            let hash = hasher(hash_builder, item.as_ref());
 
-                // Clone may panic
-                let item = item.as_ref().clone();
+            // Clone may panic
+            let item = item.as_ref().clone();
 
-                // We can use a simpler version of insert() here since:
-                // - we know there is enough space in the table.
-                // - all elements are unique.
-                let (index, _) = new_table.info().prepare_insert_slot(hash);
+            // We can use a simpler version of insert() here since:
+            // - we know there is enough space in the table.
+            // - all elements are unique.
+            let (index, _) = new_table.info().prepare_insert_slot(hash);
 
-                new_table.bucket(index).write(item);
+            new_table.bucket(index).write(item);
 
-                count += 1;
-            }
-
-            *new_table.info_mut().growth_left.get_mut() -= count;
-
-            *guard = None;
-
-            new_table
+            count += 1;
         }
+
+        *new_table.info_mut().growth_left.get_mut() -= count;
+
+        *guard = None;
+
+        new_table
     }
 }
 
@@ -932,7 +930,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
         // when batch processing a group.
         let buckets = usize::max(buckets, Group::WIDTH);
 
-        let new_table = table.clone(&self.table.hash_builder, buckets, hasher);
+        let new_table = unsafe { table.clone(&self.table.hash_builder, buckets, hasher) };
 
         self.table
             .current

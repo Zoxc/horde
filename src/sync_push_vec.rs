@@ -183,6 +183,51 @@ impl<T> TableRef<T> {
         }
     }
 
+    fn from_maybe_empty_iter<I: Iterator<Item = T>, const CHECK_LEN: bool>(
+        iter: I,
+        iter_size: usize,
+        capacity: usize,
+    ) -> TableRef<T> {
+        if iter_size == 0 {
+            TableRef::empty()
+        } else {
+            let capacity = cmp::max(iter_size, capacity);
+            unsafe { TableRef::from_iter::<_, CHECK_LEN>(iter, capacity) }
+        }
+    }
+
+    /// Allocates a new table and fills it with the content of an iterator
+    unsafe fn from_iter<I: Iterator<Item = T>, const CHECK_LEN: bool>(
+        iter: I,
+        new_capacity: usize,
+    ) -> TableRef<T> {
+        debug_assert!(new_capacity > 0);
+
+        let mut new_table = TableRef::<T>::allocate(new_capacity);
+
+        let mut guard = guard(Some(new_table), |new_table| {
+            new_table.map(|new_table| new_table.free());
+        });
+
+        // Copy all elements to the new table.
+        for (index, item) in iter.enumerate() {
+            debug_assert!(index < new_capacity);
+            if CHECK_LEN && index >= new_capacity {
+                break;
+            }
+
+            new_table.first().add(index).write(item);
+
+            // Write items per iteration in case `next` on the iterator panics.
+
+            *new_table.info_mut().items.get_mut() = index + 1;
+        }
+
+        *guard = None;
+
+        new_table
+    }
+
     unsafe fn info(&self) -> &TableInfo {
         self.data.as_ref()
     }
@@ -222,31 +267,10 @@ impl<T> TableRef<T> {
 impl<T: Clone> TableRef<T> {
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    fn clone(&self, new_capacity: usize) -> TableRef<T> {
-        unsafe {
-            debug_assert!(new_capacity >= self.info().capacity);
-            debug_assert!(new_capacity > 0);
+    unsafe fn clone(&self, new_capacity: usize) -> TableRef<T> {
+        debug_assert!(new_capacity >= self.info().capacity);
 
-            let mut new_table = TableRef::<T>::allocate(new_capacity);
-
-            let mut guard = guard(Some(new_table), |new_table| {
-                new_table.map(|new_table| new_table.free());
-            });
-
-            let iter = (*self.slice()).iter();
-
-            // Copy all elements to the new table.
-            for (index, item) in iter.enumerate() {
-                new_table.first().add(index).write(item.clone());
-
-                // Write items per iteration in case `clone` panics.
-                *new_table.info_mut().items.get_mut() = index + 1;
-            }
-
-            *guard = None;
-
-            new_table
-        }
+        TableRef::from_iter::<_, false>((*self.slice()).iter().cloned(), new_capacity)
     }
 }
 
@@ -497,7 +521,17 @@ impl<'a, T: Send + Clone> Write<'a, T> {
         let cap = cmp::max(capacity * 2, required_cap);
         let cap = cmp::max(Self::MIN_NON_ZERO_CAP, cap);
 
-        let new_table = table.clone(cap);
+        let new_table = unsafe { table.clone(cap) };
+
+        self.replace_table(new_table);
+
+        new_table
+    }
+}
+
+impl<T: Send> Write<'_, T> {
+    fn replace_table(&mut self, new_table: TableRef<T>) {
+        let table = self.table.current();
 
         self.table
             .current
@@ -515,8 +549,23 @@ impl<'a, T: Send + Clone> Write<'a, T> {
                 pin.defer_unchecked(move || destroy.run());
             }
         });
+    }
 
-        new_table
+    /// Replaces the content of the vector with the content of the iterator.
+    /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
+    #[inline]
+    pub fn replace<I: IntoIterator<Item = T>>(&mut self, iter: I, capacity: usize) {
+        let iter = iter.into_iter();
+
+        let table = if let Some(max) = iter.size_hint().1 {
+            TableRef::from_maybe_empty_iter::<_, true>(iter, max, capacity)
+        } else {
+            let elements: Vec<_> = iter.collect();
+            let len = elements.len();
+            TableRef::from_maybe_empty_iter::<_, false>(elements.into_iter(), len, capacity)
+        };
+
+        self.replace_table(table);
     }
 }
 
