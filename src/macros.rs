@@ -52,4 +52,3 @@ macro_rules! cfg_if {
         $(#[$m] $it)*
     };
 }
-

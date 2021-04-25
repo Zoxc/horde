@@ -641,11 +641,7 @@ impl<T, S> SyncInsertTable<T, S> {
     /// Gets a mutable reference to an element in the table.
     #[inline]
     pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.find(hash, eq) {
-            Some(bucket) => Some(unsafe { bucket.as_mut() }),
-            None => None,
-        }
+        self.find(hash, eq).map(|bucket| unsafe { bucket.as_mut() })
     }
 
     /// Gets a reference to the underlying mutex that protects writes.
@@ -757,11 +753,9 @@ impl<'a, T, S> Read<'a, T, S> {
     /// Gets a reference to an element in the table.
     #[inline]
     pub fn get(self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.table.find(hash, eq) {
-            Some(bucket) => Some(unsafe { bucket.as_ref() }),
-            None => None,
-        }
+        self.table
+            .find(hash, eq)
+            .map(|bucket| unsafe { bucket.as_ref() })
     }
 
     /// Returns the number of elements the map can hold without reallocating.

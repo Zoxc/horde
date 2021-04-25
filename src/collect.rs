@@ -181,7 +181,9 @@ pub fn collect() {
         cold_path(|| {
             let callbacks = COLLECTOR.lock().quiet();
 
-            callbacks.map(|callbacks| callbacks.into_iter().for_each(|callback| callback()));
+            if let Some(callbacks) = callbacks {
+                callbacks.into_iter().for_each(|callback| callback())
+            }
         });
     }
 }
