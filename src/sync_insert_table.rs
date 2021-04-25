@@ -1004,6 +1004,11 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
 }
 
 /// Represents where a value would be if inserted.
+///
+/// Created by calling `get_potential` on [Read]. All methods on this type takes a table handle
+/// and this must be a handle to the same table `get_potential` was called on. Operations also must
+/// be on the same element as given to `get_potential`. The operations have a fast path for when
+/// the element is still missing.
 #[derive(Copy, Clone, Debug)]
 pub struct PotentialSlot {
     index: usize,
@@ -1012,7 +1017,7 @@ pub struct PotentialSlot {
 
 impl PotentialSlot {
     #[inline]
-    unsafe fn is_empty<T>(&self, table: TableRef<T>) -> bool {
+    unsafe fn is_empty<T>(self, table: TableRef<T>) -> bool {
         let bucket_mask = table.info().bucket_mask;
         let index = self.index;
 
@@ -1030,7 +1035,7 @@ impl PotentialSlot {
     /// Gets a reference to an element in the table.
     #[inline]
     pub fn get<'a, T, S>(
-        &self,
+        self,
         table: Read<'a, T, S>,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
@@ -1044,6 +1049,9 @@ impl PotentialSlot {
         cold_path(|| table.get(hash, eq))
     }
 
+    /// Returns a new up-to-date potential slot.
+    /// This can be useful if there could have been insertions since the slot was derived
+    /// and you want to use `try_insert_new` or `insert_new_unchecked`.
     #[inline]
     pub fn refresh<'a, T, S>(
         self,
@@ -1061,7 +1069,7 @@ impl PotentialSlot {
     }
 
     #[inline]
-    unsafe fn insert<'a, T>(&self, table: TableRef<T>, value: T, hash: u64) -> &'a T {
+    unsafe fn insert<'a, T>(self, table: TableRef<T>, value: T, hash: u64) -> &'a T {
         let index = self.index;
         let bucket = table.bucket(index);
         bucket.write(value);
@@ -1076,7 +1084,7 @@ impl PotentialSlot {
     /// This does not check if the given element already exists in the table.
     #[inline]
     pub fn insert_new<'a, T: Send + Clone, S>(
-        &self,
+        self,
         table: &mut Write<'a, T, S>,
         hash: u64,
         value: T,
@@ -1097,11 +1105,13 @@ impl PotentialSlot {
     }
 
     /// Inserts a new element into the table, and returns a reference to it.
+    /// Returns [None] if the potential slot is taken by other insertions or if
+    /// there's no spare capacity in the table.
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
     pub fn try_insert_new<'a, T, S>(
-        &self,
+        self,
         table: &mut Write<'a, T, S>,
         hash: u64,
         value: T,
@@ -1121,9 +1131,17 @@ impl PotentialSlot {
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
+    ///
+    /// # Safety
+    /// Derived refers here to either a value returned by `get_potential` or by a `refresh` call.
+    ///
+    /// The following conditions must hold for this function to be safe:
+    /// - `table` must be the same table that `self` is derived from.
+    /// - `hash` and `value` must match the value used when `self` was derived.
+    /// - There must not have been any insertions to the table since `self` was derived.
     #[inline]
     pub unsafe fn insert_new_unchecked<'a, T, S>(
-        &self,
+        self,
         table: &mut Write<'a, T, S>,
         hash: u64,
         value: T,
