@@ -1,5 +1,5 @@
-[![Build Status](https://img.shields.io/github/workflow/status/Zoxc/concurrent/build?label=build)](https://github.com/Zoxc/concurrent/actions/workflows/build.yaml)
-[![Documentation](https://img.shields.io/github/workflow/status/Zoxc/concurrent/docs?label=docs)](https://zoxc.github.io/concurrent/concurrent/)
+[![Build Status](https://img.shields.io/github/workflow/status/Zoxc/horde/build?label=build)](https://github.com/Zoxc/horde/actions/workflows/build.yaml)
+[![Documentation](https://img.shields.io/github/workflow/status/Zoxc/horde/docs?label=docs)](https://zoxc.github.io/horde/horde/)
 
 A crate that contains `SyncInsertTable` and `SyncPushVec`, both which offers lock-free reads, but limited deletion. Their API is intensionally minimal, but efficient. They use quiescent state based reclamation for which an API is also available. `SyncInsertTable` is based on the [hashbrown](https://crates.io/crates/hashbrown) crate and has similar lookup performance.
 
