@@ -20,39 +20,34 @@ mod code;
 
 static DEFERRED: AtomicUsize = AtomicUsize::new(0);
 
-/// Represents a proof that the current thread is pinned for the lifetime `'a`.
+/// Represents a proof that no deferred methods will run for the lifetime `'a`.
 /// It can be used to access data structures in a lock-free manner.
 #[derive(Clone, Copy)]
 pub struct Pin<'a> {
     _private: PhantomData<&'a ()>,
 }
 
-impl !Send for Pin<'_> {}
-impl !Sync for Pin<'_> {}
+// FIXME: Prevent pin calls inside the callback?
+/// This schedules a closure to run at some point after all threads are outside their current pinned
+/// regions.
+///
+/// The closure will be called by the [collect] method.
+///
+/// # Safety
+/// This method is unsafe since the closure is not required to be `'static`.
+/// It's up to the caller to ensure the closure does not access freed memory.
+/// A `move` closure is recommended to avoid accidental references to stack variables.
+pub unsafe fn defer_unchecked<F>(f: F)
+where
+    F: FnOnce(),
+    F: Send,
+{
+    let f: Box<dyn FnOnce() + Send> = Box::new(f);
+    let f: Box<dyn FnOnce() + Send + 'static> = mem::transmute(f);
 
-impl Pin<'_> {
-    // FIXME: Prevent pin calls inside the callback?
-    /// This schedules a closure to run at some point after all threads are outside their current pinned
-    /// regions.
-    ///
-    /// The closure will be called by the [collect] method.
-    ///
-    /// # Safety
-    /// This method is unsafe since the closure is not required to be `'static`.
-    /// It's up to the caller to ensure the closure does not access freed memory.
-    /// A `move` closure is recommended to avoid accidental references to stack variables.
-    pub unsafe fn defer_unchecked<F>(&self, f: F)
-    where
-        F: FnOnce(),
-        F: Send,
-    {
-        let f: Box<dyn FnOnce() + Send> = Box::new(f);
-        let f: Box<dyn FnOnce() + Send + 'static> = mem::transmute(f);
+    COLLECTOR.lock().defer(f);
 
-        COLLECTOR.lock().defer(f);
-
-        DEFERRED.fetch_add(1, Ordering::Release);
-    }
+    DEFERRED.fetch_add(1, Ordering::Release);
 }
 
 #[thread_local]
@@ -193,6 +188,11 @@ pub fn collect() {
         cold_path(|| {
             data.assert_unpinned();
 
+            // Check if we could block any deferred methods
+            if !data.registered.get() {
+                return;
+            }
+
             let callbacks = COLLECTOR.lock().quiet();
 
             if let Some(callbacks) = callbacks {
@@ -282,8 +282,6 @@ impl Collector {
     }
 
     fn defer(&mut self, callback: Box<dyn FnOnce() + Send>) {
-        debug_assert!(self.threads.contains_key(&thread::current().id()));
-
         self.current_deferred.push(callback);
     }
 }

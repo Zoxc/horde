@@ -1,7 +1,7 @@
 //! A contiguous push-only array type with lock-free reads.
 
 use crate::{
-    collect::{pin, Pin},
+    collect::{self, Pin},
     scopeguard::guard,
 };
 use core::ptr::NonNull;
@@ -434,10 +434,10 @@ impl<'a, T> Read<'a, T> {
     }
 }
 
-impl<'a, T> Write<'a, T> {
+impl<T> Write<'_, T> {
     /// Creates a [Read] handle which gives access to read operations.
     #[inline]
-    pub fn read(&self) -> Read<'a, T> {
+    pub fn read(&self) -> Read<'_, T> {
         Read { table: self.table }
     }
 }
@@ -537,18 +537,16 @@ impl<T: Send> Write<'_, T> {
             .current
             .store(new_table.data.as_ptr(), Ordering::Release);
 
-        pin(|pin| {
-            let destroy = Arc::new(DestroyTable {
-                table,
-                lock: Mutex::new(false),
-            });
-
-            unsafe {
-                (*self.table.old.get()).push(destroy.clone());
-
-                pin.defer_unchecked(move || destroy.run());
-            }
+        let destroy = Arc::new(DestroyTable {
+            table,
+            lock: Mutex::new(false),
         });
+
+        unsafe {
+            (*self.table.old.get()).push(destroy.clone());
+
+            collect::defer_unchecked(move || destroy.run());
+        }
     }
 
     /// Replaces the content of the vector with the content of the iterator.

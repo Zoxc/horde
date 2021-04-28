@@ -3,7 +3,7 @@
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{pin, Pin},
+    collect::{self, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{cold_path, equivalent_key, make_hash, make_insert_hash},
@@ -895,10 +895,10 @@ impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
     }
 }
 
-impl<'a, T, S> Write<'a, T, S> {
+impl<T, S> Write<'_, T, S> {
     /// Creates a [Read] handle which gives access to read operations.
     #[inline]
-    pub fn read(&self) -> Read<'a, T, S> {
+    pub fn read(&self) -> Read<'_, T, S> {
         Read { table: self.table }
     }
 }
@@ -984,18 +984,16 @@ impl<T: Send, S> Write<'_, T, S> {
             .current
             .store(new_table.data.as_ptr(), Ordering::Release);
 
-        pin(|pin| {
-            let destroy = Arc::new(DestroyTable {
-                table,
-                lock: Mutex::new(false),
-            });
-
-            unsafe {
-                (*self.table.old.get()).push(destroy.clone());
-
-                pin.defer_unchecked(move || destroy.run());
-            }
+        let destroy = Arc::new(DestroyTable {
+            table,
+            lock: Mutex::new(false),
         });
+
+        unsafe {
+            (*self.table.old.get()).push(destroy.clone());
+
+            collect::defer_unchecked(move || destroy.run());
+        }
     }
 
     /// Replaces the content of the table with the content of the iterator.

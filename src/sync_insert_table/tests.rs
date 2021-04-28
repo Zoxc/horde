@@ -288,7 +288,7 @@ fn intern_potential_try() {
 
         write.reserve_one(SyncInsertTable::map_hasher);
 
-        let p = p.refresh(write.read(), hash, |v| v.0 == k);
+        let p = p.refresh(table.read(pin), hash, |v| v.0 == k);
 
         match p {
             Ok(_) => true,

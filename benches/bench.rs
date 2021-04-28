@@ -105,7 +105,7 @@ fn intern4_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'
 
     write.reserve_one(SyncInsertTable::hasher);
 
-    let p = p.refresh(write.read(), hash, |v| v.0 == k);
+    let p = p.refresh(table.read(pin), hash, |v| v.0 == k);
 
     match p {
         Ok(v) => v.1,
@@ -143,7 +143,7 @@ fn intern5_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'
 
     write.reserve_one(SyncInsertTable::hasher);
 
-    let p = p.refresh(write.read(), hash, |v| v.0 == k);
+    let p = p.refresh(table.read(pin), hash, |v| v.0 == k);
 
     match p {
         Ok(v) => v.1,
@@ -188,11 +188,11 @@ fn insert(b: &mut Bencher) {
 #[bench]
 fn insert_with_try_potential(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
         write.reserve_one(SyncInsertTable::hasher);
-        match write.read().get_potential(hash, |&(k, _)| k == i) {
+        match m.read(pin).get_potential(hash, |&(k, _)| k == i) {
             Ok(_) => (),
             Err(p) => {
                 p.try_insert_new(&mut write, hash, (i, i * 2));
@@ -200,23 +200,25 @@ fn insert_with_try_potential(b: &mut Bencher) {
         };
     }
 
-    b.iter(|| {
-        let mut m = SyncInsertTable::new();
-        for i in (0..20000i32).step_by(4) {
-            iter(&m, i);
-        }
-        black_box(&mut m);
+    pin(|pin| {
+        b.iter(|| {
+            let mut m = SyncInsertTable::new();
+            for i in (0..20000i32).step_by(4) {
+                iter(&m, i, pin);
+            }
+            black_box(&mut m);
+        })
     })
 }
 
 #[bench]
 fn insert_with_unchecked_potential(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
         write.reserve_one(SyncInsertTable::hasher);
-        match write.read().get_potential(hash, |&(k, _)| k == i) {
+        match m.read(pin).get_potential(hash, |&(k, _)| k == i) {
             Ok(_) => (),
             Err(p) => {
                 unsafe { p.insert_new_unchecked(&mut write, hash, (i, i * 2)) };
@@ -224,22 +226,24 @@ fn insert_with_unchecked_potential(b: &mut Bencher) {
         };
     }
 
-    b.iter(|| {
-        let mut m = SyncInsertTable::new();
-        for i in (0..20000i32).step_by(4) {
-            iter(&m, i);
-        }
-        black_box(&mut m);
+    pin(|pin| {
+        b.iter(|| {
+            let mut m = SyncInsertTable::new();
+            for i in (0..20000i32).step_by(4) {
+                iter(&m, i, pin);
+            }
+            black_box(&mut m);
+        })
     })
 }
 
 #[bench]
 fn insert_with_potential(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
-        match write.read().get_potential(hash, |&(k, _)| k == i) {
+        match m.read(pin).get_potential(hash, |&(k, _)| k == i) {
             Ok(_) => (),
             Err(p) => {
                 p.insert_new(&mut write, hash, (i, i * 2), SyncInsertTable::hasher);
@@ -247,12 +251,14 @@ fn insert_with_potential(b: &mut Bencher) {
         };
     }
 
-    b.iter(|| {
-        let mut m = SyncInsertTable::new();
-        for i in (0..20000i32).step_by(4) {
-            iter(&m, i);
-        }
-        black_box(&mut m);
+    pin(|pin| {
+        b.iter(|| {
+            let mut m = SyncInsertTable::new();
+            for i in (0..20000i32).step_by(4) {
+                iter(&m, i, pin);
+            }
+            black_box(&mut m);
+        })
     })
 }
 
