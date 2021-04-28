@@ -1,3 +1,5 @@
+horde
+=====
 [![Build Status](https://img.shields.io/github/workflow/status/Zoxc/horde/build?label=build)](https://github.com/Zoxc/horde/actions/workflows/build.yaml)
 [![Documentation](https://img.shields.io/github/workflow/status/Zoxc/horde/docs?label=docs)](https://zoxc.github.io/horde/horde/)
 

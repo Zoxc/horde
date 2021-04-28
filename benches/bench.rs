@@ -8,7 +8,7 @@ extern crate test;
 
 use std::hash::Hasher;
 
-use concurrent::{
+use horde::{
     collect::{pin, Pin},
     sync_insert_table::SyncInsertTable,
 };
