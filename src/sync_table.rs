@@ -13,7 +13,9 @@ use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
-    cmp, fmt,
+    cmp,
+    convert::TryInto,
+    fmt,
     hash::BuildHasher,
     intrinsics::{likely, unlikely},
     iter::FusedIterator,
@@ -92,11 +94,11 @@ impl<T> Bucket<T> {
     }
 }
 
-/// A handle to a [SyncInsertTable] with read access.
+/// A handle to a [SyncTable] with read access.
 ///
 /// It is acquired either by a pin, or by exclusive access to the table.
 pub struct Read<'a, T, S = DefaultHashBuilder> {
-    table: &'a SyncInsertTable<T, S>,
+    table: &'a SyncTable<T, S>,
 }
 
 impl<T, S> Copy for Read<'_, T, S> {}
@@ -106,12 +108,12 @@ impl<T, S> Clone for Read<'_, T, S> {
     }
 }
 
-/// A handle to a [SyncInsertTable] with write access.
+/// A handle to a [SyncTable] with write access.
 pub struct Write<'a, T, S = DefaultHashBuilder> {
-    table: &'a SyncInsertTable<T, S>,
+    table: &'a SyncTable<T, S>,
 }
 
-/// A handle to a [SyncInsertTable] with write access protected by a lock.
+/// A handle to a [SyncTable] with write access protected by a lock.
 pub struct LockedWrite<'a, T, S = DefaultHashBuilder> {
     table: Write<'a, T, S>,
     _guard: MutexGuard<'a, ()>,
@@ -133,13 +135,13 @@ impl<'a, T, S> DerefMut for LockedWrite<'a, T, S> {
     }
 }
 
-/// Default hash builder for [SyncInsertTable].
+/// Default hash builder for [SyncTable].
 pub type DefaultHashBuilder = RandomState;
 
-/// An insert-only hash table with lock-free reads.
+/// A hash table with lock-free reads.
 ///
 /// It is based on the table from the `hashbrown` crate.
-pub struct SyncInsertTable<T, S = DefaultHashBuilder> {
+pub struct SyncTable<T, S = DefaultHashBuilder> {
     hash_builder: S,
 
     current: AtomicPtr<TableInfo>,
@@ -494,7 +496,7 @@ impl<T> TableRef<T> {
     }
 
     /// Returns an iterator over every element in the table. It is up to
-    /// the caller to ensure that the `SyncInsertTable` outlives the `RawIter`.
+    /// the caller to ensure that the `SyncTable` outlives the `RawIter`.
     /// Because we cannot make the `next` method unsafe on the `RawIter`
     /// struct, we have to make the `iter` method unsafe.
     #[inline]
@@ -617,7 +619,7 @@ impl<T> DestroyTable<T> {
     }
 }
 
-unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
+unsafe impl<#[may_dangle] T, S> Drop for SyncTable<T, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -629,18 +631,18 @@ unsafe impl<#[may_dangle] T, S> Drop for SyncInsertTable<T, S> {
     }
 }
 
-unsafe impl<T: Send, S> Send for SyncInsertTable<T, S> {}
-unsafe impl<T: Sync, S> Sync for SyncInsertTable<T, S> {}
+unsafe impl<T: Send, S> Send for SyncTable<T, S> {}
+unsafe impl<T: Sync, S> Sync for SyncTable<T, S> {}
 
-impl<T, S: Default> Default for SyncInsertTable<T, S> {
+impl<T, S: Default> Default for SyncTable<T, S> {
     #[inline]
     fn default() -> Self {
         Self::new_with(Default::default(), 0)
     }
 }
 
-impl<T> SyncInsertTable<T, DefaultHashBuilder> {
-    /// Creates an empty [SyncInsertTable].
+impl<T> SyncTable<T, DefaultHashBuilder> {
+    /// Creates an empty [SyncTable].
     ///
     /// The hash map is initially created with a capacity of 0, so it will not allocate until it
     /// is first inserted into.
@@ -650,8 +652,8 @@ impl<T> SyncInsertTable<T, DefaultHashBuilder> {
     }
 }
 
-impl<T, S> SyncInsertTable<T, S> {
-    /// Creates an empty [SyncInsertTable] with the specified capacity, using `hash_builder`
+impl<T, S> SyncTable<T, S> {
+    /// Creates an empty [SyncTable] with the specified capacity, using `hash_builder`
     /// to hash the elements or keys.
     ///
     /// The hash map will be able to hold at least `capacity` elements without
@@ -753,7 +755,7 @@ impl<T, S> SyncInsertTable<T, S> {
     }
 }
 
-impl<T, S: BuildHasher> SyncInsertTable<T, S> {
+impl<T, S: BuildHasher> SyncTable<T, S> {
     /// Hashes any hashable value with the hasher the table was constructed with.
     #[inline]
     pub fn hash_any<V: Hash + ?Sized>(&self, val: &V) -> u64 {
@@ -761,7 +763,7 @@ impl<T, S: BuildHasher> SyncInsertTable<T, S> {
     }
 }
 
-impl<T: Hash, S: BuildHasher> SyncInsertTable<T, S> {
+impl<T: Hash, S: BuildHasher> SyncTable<T, S> {
     /// Hashes a value with the hasher the table was constructed with.
     /// This can be passed to methods expecting a hasher.
     #[inline]
@@ -770,7 +772,7 @@ impl<T: Hash, S: BuildHasher> SyncInsertTable<T, S> {
     }
 }
 
-impl<K: Hash, V, S: BuildHasher> SyncInsertTable<(K, V), S> {
+impl<K: Hash, V, S: BuildHasher> SyncTable<(K, V), S> {
     /// Hashes the first element of a pair with the `hash_builder` passed.
     /// This is useful to treat the table as a hash map and can be passed to methods
     /// expecting a hasher.
@@ -861,13 +863,13 @@ impl<'a, T, S> Read<'a, T, S> {
 impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
     /// Returns a new copy of the table.
     #[inline]
-    pub fn clone(self, hasher: impl Fn(&S, &T) -> u64) -> SyncInsertTable<T, S> {
+    pub fn clone(self, hasher: impl Fn(&S, &T) -> u64) -> SyncTable<T, S> {
         // TODO: Optimize
         let table = self.table.current();
         unsafe {
             let buckets = table.info().buckets();
 
-            SyncInsertTable {
+            SyncTable {
                 hash_builder: self.table.hash_builder.clone(),
                 current: AtomicPtr::new(
                     if buckets > 0 {
@@ -1060,7 +1062,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
     /// Treat the table as a hash map and insert a key-value pair where `hash` is the key's hash.
     #[inline]
     pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
-        self.reserve_one(SyncInsertTable::map_hasher);
+        self.reserve_one(SyncTable::map_hasher);
         let table = self.table.current();
         match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
             Ok(_) => Some((k, v)),
@@ -1081,9 +1083,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K,
     }
 }
 
-impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default>
-    SyncInsertTable<(K, V), S>
-{
+impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> SyncTable<(K, V), S> {
     /// Create a table which works as a hash map from an iterator.
     #[inline]
     pub fn map_from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
@@ -1537,3 +1537,18 @@ impl<T> Iterator for RawIter<T> {
 }
 
 impl<T> FusedIterator for RawIter<T> {}
+
+/// Get a suitable shard index from a hash when sharded the hash table.
+/// `shards` must be a power of 2.
+#[inline]
+pub fn shard_index_by_hash(hash: u64, shards: usize) -> usize {
+    let shards: usize = shards.try_into().unwrap();
+    assert!(shards.is_power_of_two());
+    let shard_bits = shards - 1;
+
+    let hash_len = mem::size_of::<usize>();
+    // Ignore the top 7 bits as hashbrown uses these and get the next SHARD_BITS highest bits.
+    // hashbrown also uses the lowest bits, so we can't use those
+    let bits = (hash >> (hash_len * 8 - 7 - shard_bits)) as usize;
+    bits % shards
+}

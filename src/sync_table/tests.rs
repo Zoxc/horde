@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::SyncInsertTable;
+use super::SyncTable;
 use crate::collect::pin;
 use crate::collect::release;
 use crate::collect::Pin;
@@ -16,7 +16,7 @@ fn high_align() {
     #[derive(Clone, PartialEq)]
     struct A(u64);
 
-    let table = SyncInsertTable::new();
+    let table = SyncTable::new();
 
     table.find(1, |a| a == &A(1));
 
@@ -27,7 +27,7 @@ fn high_align() {
 
 #[test]
 fn test_create_capacity_zero() {
-    let m = SyncInsertTable::new_with(RandomState::new(), 0);
+    let m = SyncTable::new_with(RandomState::new(), 0);
 
     assert!(m.lock().map_insert(1, 1).is_none());
 
@@ -39,15 +39,14 @@ fn test_create_capacity_zero() {
 
 #[test]
 fn test_replace() {
-    let m = SyncInsertTable::new();
+    let m = SyncTable::new();
     m.lock().map_insert(2, 7);
     m.lock().map_insert(5, 3);
-    m.lock()
-        .replace(vec![(3, 4)], 0, SyncInsertTable::map_hasher);
+    m.lock().replace(vec![(3, 4)], 0, SyncTable::map_hasher);
     assert_eq!(*m.lock().read().map_get(&3).unwrap(), 4);
     assert_eq!(m.lock().read().map_get(&2), None);
     assert_eq!(m.lock().read().map_get(&5), None);
-    m.lock().replace(vec![], 0, SyncInsertTable::map_hasher);
+    m.lock().replace(vec![], 0, SyncTable::map_hasher);
     assert_eq!(m.lock().read().map_get(&3), None);
     assert_eq!(m.lock().read().map_get(&2), None);
     assert_eq!(m.lock().read().map_get(&5), None);
@@ -56,7 +55,7 @@ fn test_replace() {
 
 #[test]
 fn test_remove() {
-    let m = SyncInsertTable::new();
+    let m = SyncTable::new();
     m.lock().map_insert(2, 7);
     m.lock().map_insert(5, 3);
     m.lock().remove(m.hash_any(&2), |v| v.0 == 2);
@@ -69,7 +68,7 @@ fn test_remove() {
 
 #[test]
 fn test_insert() {
-    let m = SyncInsertTable::new();
+    let m = SyncTable::new();
     assert_eq!(m.lock().read().len(), 0);
     assert!(m.lock().map_insert(1, 2).is_none());
     assert_eq!(m.lock().read().len(), 1);
@@ -83,7 +82,7 @@ fn test_insert() {
 
 #[test]
 fn test_iter() {
-    let m = SyncInsertTable::new();
+    let m = SyncTable::new();
     assert!(m.lock().map_insert(1, 2).is_none());
     assert!(m.lock().map_insert(5, 3).is_none());
     assert!(m.lock().map_insert(2, 4).is_none());
@@ -101,7 +100,7 @@ fn test_iter() {
 
 #[test]
 fn test_insert_conflicts() {
-    let m = SyncInsertTable::new_with(RandomState::default(), 4);
+    let m = SyncTable::new_with(RandomState::default(), 4);
     assert!(m.lock().map_insert(1, 2).is_none());
     assert!(m.lock().map_insert(5, 3).is_none());
     assert!(m.lock().map_insert(9, 4).is_none());
@@ -114,7 +113,7 @@ fn test_insert_conflicts() {
 
 #[test]
 fn test_expand() {
-    let m = SyncInsertTable::new();
+    let m = SyncTable::new();
 
     assert_eq!(m.lock().read().len(), 0);
 
@@ -132,7 +131,7 @@ fn test_expand() {
 
 #[test]
 fn test_find() {
-    let m = SyncInsertTable::new();
+    let m = SyncTable::new();
     assert!(m.lock().read().map_get(&1).is_none());
     m.lock().map_insert(1, 2);
     match m.lock().read().map_get(&1) {
@@ -145,7 +144,7 @@ fn test_find() {
 
 #[test]
 fn test_capacity_not_less_than_len() {
-    let a: SyncInsertTable<(i32, i32)> = SyncInsertTable::new();
+    let a: SyncTable<(i32, i32)> = SyncTable::new();
     let mut item = 0;
 
     for _ in 0..116 {
@@ -174,11 +173,11 @@ fn test_capacity_not_less_than_len() {
 
 #[test]
 fn rehash() {
-    let table = SyncInsertTable::new();
+    let table = SyncTable::new();
     for i in 0..100 {
         table
             .lock()
-            .insert_new(table.hash_any(&i), i, SyncInsertTable::hasher);
+            .insert_new(table.hash_any(&i), i, SyncTable::hasher);
     }
 
     pin(|pin| {
@@ -203,7 +202,7 @@ fn rehash() {
 const INTERN_SIZE: u64 = if cfg!(miri) { 35 } else { 26334 };
 const HIT_RATE: u64 = 84;
 
-fn assert_equal(a: &mut SyncInsertTable<(u64, u64)>, b: &HashMap<u64, u64>) {
+fn assert_equal(a: &mut SyncTable<(u64, u64)>, b: &HashMap<u64, u64>) {
     let mut ca: Vec<_> = b.iter().map(|v| (*v.0, *v.1)).collect();
     ca.sort();
     let mut cb: Vec<_> = a.write().read().iter().map(|v| (v.0, v.1)).collect();
@@ -211,9 +210,9 @@ fn assert_equal(a: &mut SyncInsertTable<(u64, u64)>, b: &HashMap<u64, u64>) {
     assert_eq!(ca, cb);
 }
 
-fn test_interning(intern: impl Fn(&SyncInsertTable<(u64, u64)>, u64, u64, Pin<'_>) -> bool) {
+fn test_interning(intern: impl Fn(&SyncTable<(u64, u64)>, u64, u64, Pin<'_>) -> bool) {
     let mut control = HashMap::new();
-    let mut test = SyncInsertTable::new();
+    let mut test = SyncTable::new();
 
     for i in 0..INTERN_SIZE {
         let mut s = DefaultHasher::new();
@@ -243,7 +242,7 @@ fn test_interning(intern: impl Fn(&SyncInsertTable<(u64, u64)>, u64, u64, Pin<'_
 
 #[test]
 fn intern_potential() {
-    fn intern(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
+    fn intern(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_any(&k);
         let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
             Ok(_) => return true,
@@ -257,7 +256,7 @@ fn intern_potential() {
                 true
             }
             None => {
-                p.insert_new(&mut write, hash, (k, v), SyncInsertTable::map_hasher);
+                p.insert_new(&mut write, hash, (k, v), SyncTable::map_hasher);
                 false
             }
         }
@@ -268,7 +267,7 @@ fn intern_potential() {
 
 #[test]
 fn intern_get_insert() {
-    fn intern(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
+    fn intern(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_any(&k);
         match table.read(pin).get(hash, |v| v.0 == k) {
             Some(_) => return true,
@@ -279,7 +278,7 @@ fn intern_get_insert() {
         match write.read().get(hash, |v| v.0 == k) {
             Some(_) => true,
             None => {
-                write.insert_new(hash, (k, v), SyncInsertTable::map_hasher);
+                write.insert_new(hash, (k, v), SyncTable::map_hasher);
                 false
             }
         }
@@ -290,7 +289,7 @@ fn intern_get_insert() {
 
 #[test]
 fn intern_potential_try() {
-    fn intern(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
+    fn intern(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_any(&k);
         let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
             Ok(_) => return true,
@@ -299,7 +298,7 @@ fn intern_potential_try() {
 
         let mut write = table.lock();
 
-        write.reserve_one(SyncInsertTable::map_hasher);
+        write.reserve_one(SyncTable::map_hasher);
 
         let p = p.refresh(table.read(pin), hash, |v| v.0 == k);
 

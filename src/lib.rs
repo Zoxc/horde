@@ -1,4 +1,4 @@
-//! This crate contains [SyncInsertTable] and [SyncPushVec] which offers lock-free reads and uses
+//! This crate contains [SyncTable] and [SyncPushVec] which offers lock-free reads and uses
 //! quiescent state based reclamation for which an API is available in the [collect] module.
 
 #![feature(
@@ -25,8 +25,8 @@ mod util;
 
 pub mod hash_map;
 
-pub mod sync_insert_table;
 pub mod sync_push_vec;
+pub mod sync_table;
 
-pub use sync_insert_table::SyncInsertTable;
 pub use sync_push_vec::SyncPushVec;
+pub use sync_table::SyncTable;

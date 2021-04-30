@@ -10,12 +10,12 @@ use std::hash::Hasher;
 
 use horde::{
     collect::{pin, Pin},
-    sync_insert_table::SyncInsertTable,
+    sync_table::SyncTable,
 };
 use test::{black_box, Bencher};
 
-fn intern_map() -> SyncInsertTable<(u64, u64)> {
-    let mut m = SyncInsertTable::new();
+fn intern_map() -> SyncTable<(u64, u64)> {
+    let mut m = SyncTable::new();
     for i in 0..50000 {
         let mut s = std::collections::hash_map::DefaultHasher::new();
         s.write_u64(i);
@@ -28,7 +28,7 @@ fn intern_map() -> SyncInsertTable<(u64, u64)> {
 }
 
 #[inline(never)]
-fn intern3_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+fn intern3_value(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     match table.read(pin).get(hash, |v| v.0 == k) {
         Some(v) => return v.1,
@@ -39,7 +39,7 @@ fn intern3_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'
     match write.read().get(hash, |v| v.0 == k) {
         Some(v) => v.1,
         None => {
-            write.insert_new(hash, (k, v), SyncInsertTable::hasher);
+            write.insert_new(hash, (k, v), SyncTable::hasher);
             v
         }
     }
@@ -51,7 +51,7 @@ fn intern3(b: &mut Bencher) {
 
     pin(|pin| {
         b.iter(|| {
-            let m2 = m.read(pin).clone(SyncInsertTable::hasher);
+            let m2 = m.read(pin).clone(SyncTable::hasher);
             for i in 0..50000 {
                 let mut result = intern3_value(&m2, i, i * 2, pin);
                 black_box(&mut result);
@@ -61,7 +61,7 @@ fn intern3(b: &mut Bencher) {
 }
 
 #[inline(never)]
-fn intern_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+fn intern_value(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
@@ -72,7 +72,7 @@ fn intern_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_
     match p.get(write.read(), hash, |v| v.0 == k) {
         Some(v) => v.1,
         None => {
-            p.insert_new(&mut write, hash, (k, v), SyncInsertTable::hasher);
+            p.insert_new(&mut write, hash, (k, v), SyncTable::hasher);
             v
         }
     }
@@ -84,7 +84,7 @@ fn intern(b: &mut Bencher) {
 
     pin(|pin| {
         b.iter(|| {
-            let m2 = m.read(pin).clone(SyncInsertTable::hasher);
+            let m2 = m.read(pin).clone(SyncTable::hasher);
             for i in 0..50000 {
                 let mut result = intern_value(&m2, i, i * 2, pin);
                 black_box(&mut result);
@@ -94,7 +94,7 @@ fn intern(b: &mut Bencher) {
 }
 
 #[inline(never)]
-fn intern4_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+fn intern4_value(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
@@ -103,7 +103,7 @@ fn intern4_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'
 
     let mut write = table.lock();
 
-    write.reserve_one(SyncInsertTable::hasher);
+    write.reserve_one(SyncTable::hasher);
 
     let p = p.refresh(table.read(pin), hash, |v| v.0 == k);
 
@@ -122,7 +122,7 @@ fn intern4(b: &mut Bencher) {
 
     pin(|pin| {
         b.iter(|| {
-            let m2 = m.read(pin).clone(SyncInsertTable::hasher);
+            let m2 = m.read(pin).clone(SyncTable::hasher);
             for i in 0..50000 {
                 let mut result = intern4_value(&m2, i, i * 2, pin);
                 black_box(&mut result);
@@ -132,7 +132,7 @@ fn intern4(b: &mut Bencher) {
 }
 
 #[inline(never)]
-fn intern5_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+fn intern5_value(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_any(&k);
     let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
         Ok(v) => return v.1,
@@ -141,7 +141,7 @@ fn intern5_value(table: &SyncInsertTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'
 
     let mut write = table.lock();
 
-    write.reserve_one(SyncInsertTable::hasher);
+    write.reserve_one(SyncTable::hasher);
 
     let p = p.refresh(table.read(pin), hash, |v| v.0 == k);
 
@@ -160,7 +160,7 @@ fn intern5(b: &mut Bencher) {
 
     pin(|pin| {
         b.iter(|| {
-            let m2 = m.read(pin).clone(SyncInsertTable::hasher);
+            let m2 = m.read(pin).clone(SyncTable::hasher);
             for i in 0..50000 {
                 let mut result = intern5_value(&m2, i, i * 2, pin);
                 black_box(&mut result);
@@ -172,12 +172,12 @@ fn intern5(b: &mut Bencher) {
 #[bench]
 fn insert(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+    fn iter(m: &SyncTable<(i32, i32)>, i: i32) {
         m.lock().map_insert(i, i * 2);
     }
 
     b.iter(|| {
-        let mut m = SyncInsertTable::new();
+        let mut m = SyncTable::new();
         for i in (0..20000i32).step_by(4) {
             iter(&m, i);
         }
@@ -188,10 +188,10 @@ fn insert(b: &mut Bencher) {
 #[bench]
 fn insert_with_try_potential(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
+    fn iter(m: &SyncTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
-        write.reserve_one(SyncInsertTable::hasher);
+        write.reserve_one(SyncTable::hasher);
         match m.read(pin).get_potential(hash, |&(k, _)| k == i) {
             Ok(_) => (),
             Err(p) => {
@@ -202,7 +202,7 @@ fn insert_with_try_potential(b: &mut Bencher) {
 
     pin(|pin| {
         b.iter(|| {
-            let mut m = SyncInsertTable::new();
+            let mut m = SyncTable::new();
             for i in (0..20000i32).step_by(4) {
                 iter(&m, i, pin);
             }
@@ -214,10 +214,10 @@ fn insert_with_try_potential(b: &mut Bencher) {
 #[bench]
 fn insert_with_unchecked_potential(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
+    fn iter(m: &SyncTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
-        write.reserve_one(SyncInsertTable::hasher);
+        write.reserve_one(SyncTable::hasher);
         match m.read(pin).get_potential(hash, |&(k, _)| k == i) {
             Ok(_) => (),
             Err(p) => {
@@ -228,7 +228,7 @@ fn insert_with_unchecked_potential(b: &mut Bencher) {
 
     pin(|pin| {
         b.iter(|| {
-            let mut m = SyncInsertTable::new();
+            let mut m = SyncTable::new();
             for i in (0..20000i32).step_by(4) {
                 iter(&m, i, pin);
             }
@@ -240,20 +240,20 @@ fn insert_with_unchecked_potential(b: &mut Bencher) {
 #[bench]
 fn insert_with_potential(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
+    fn iter(m: &SyncTable<(i32, i32)>, i: i32, pin: Pin<'_>) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
         match m.read(pin).get_potential(hash, |&(k, _)| k == i) {
             Ok(_) => (),
             Err(p) => {
-                p.insert_new(&mut write, hash, (i, i * 2), SyncInsertTable::hasher);
+                p.insert_new(&mut write, hash, (i, i * 2), SyncTable::hasher);
             }
         };
     }
 
     pin(|pin| {
         b.iter(|| {
-            let mut m = SyncInsertTable::new();
+            let mut m = SyncTable::new();
             for i in (0..20000i32).step_by(4) {
                 iter(&m, i, pin);
             }
@@ -265,19 +265,19 @@ fn insert_with_potential(b: &mut Bencher) {
 #[bench]
 fn insert_regular(b: &mut Bencher) {
     #[inline(never)]
-    fn iter(m: &SyncInsertTable<(i32, i32)>, i: i32) {
+    fn iter(m: &SyncTable<(i32, i32)>, i: i32) {
         let hash = m.hash_any(&i);
         let mut write = m.lock();
         match write.read().get(hash, |&(k, _)| k == i) {
             Some(_) => (),
             None => {
-                write.insert_new(hash, (i, i * 2), SyncInsertTable::hasher);
+                write.insert_new(hash, (i, i * 2), SyncTable::hasher);
             }
         };
     }
 
     b.iter(|| {
-        let mut m = SyncInsertTable::new();
+        let mut m = SyncTable::new();
         for i in (0..20000i32).step_by(4) {
             iter(&m, i);
         }
