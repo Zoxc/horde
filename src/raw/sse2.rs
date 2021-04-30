@@ -95,7 +95,7 @@ impl Group {
     /// Returns a `BitMask` indicating all bytes in the group which are
     /// `EMPTY` or `DELETED`.
     #[inline]
-    pub fn match_empty(self) -> BitMask {
+    pub fn match_empty_or_deleted(self) -> BitMask {
         #[allow(
             // byte: i32 as u16
             //   note: _mm_movemask_epi8 returns a 16-bit mask in a i32, the
@@ -112,6 +112,6 @@ impl Group {
     /// Returns a `BitMask` indicating all bytes in the group which are full.
     #[inline]
     pub fn match_full(&self) -> BitMask {
-        self.match_empty().invert()
+        self.match_empty_or_deleted().invert()
     }
 }

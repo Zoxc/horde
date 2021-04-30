@@ -159,6 +159,9 @@ struct TableInfo {
 
     // Number of elements that can be inserted before we need to grow the table
     growth_left: AtomicUsize,
+
+    // Number of elements that has been removed from the table
+    tombstones: AtomicUsize,
 }
 
 impl TableInfo {
@@ -169,14 +172,18 @@ impl TableInfo {
 
     /// Returns the number of buckets in the table.
     #[inline]
-    pub fn buckets(&self) -> usize {
+    fn buckets(&self) -> usize {
         self.bucket_mask + 1
     }
 
-    /// Returns the number of buckets in the table.
     #[inline]
-    pub fn items(&self) -> usize {
-        bucket_mask_to_capacity(self.bucket_mask) - self.growth_left.load(Ordering::Acquire)
+    fn items(&self) -> usize {
+        // FIXME: May overflow and return wrong value.
+        // TODO: Or will they synchronize due to the lock?
+        // NO: A concurrent write / remove may happen which puts them out of sync?
+        bucket_mask_to_capacity(self.bucket_mask)
+            - self.growth_left.load(Ordering::Acquire)
+            - self.tombstones.load(Ordering::Acquire)
     }
 
     /// Returns a pointer to a control byte.
@@ -268,7 +275,7 @@ impl TableInfo {
         let mut probe_seq = self.probe_seq(hash);
         loop {
             let group = Group::load(self.ctrl(probe_seq.pos));
-            if let Some(bit) = group.match_empty().lowest_set_bit() {
+            if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
                 let result = (probe_seq.pos + bit) & self.bucket_mask;
 
                 return result;
@@ -322,6 +329,7 @@ impl<T> TableRef<T> {
             info: TableInfo {
                 bucket_mask: 0,
                 growth_left: AtomicUsize::new(0),
+                tombstones: AtomicUsize::new(0),
             },
             control_bytes: [Group::EMPTY; 1],
         };
@@ -363,6 +371,7 @@ impl<T> TableRef<T> {
             *result.info_mut() = TableInfo {
                 bucket_mask: bucket_count - 1,
                 growth_left: AtomicUsize::new(bucket_mask_to_capacity(bucket_count - 1)),
+                tombstones: AtomicUsize::new(0),
             };
 
             result
@@ -495,7 +504,6 @@ impl<T> TableRef<T> {
         };
         RawIter {
             iter: RawIterRange::new(self.info().ctrl(0), data, self.info().buckets()),
-            items: self.info().items(),
         }
     }
 
@@ -506,7 +514,7 @@ impl<T> TableRef<T> {
         hash: u64,
         mut eq: impl FnMut(&T) -> bool,
         mut stop: impl FnMut(&Group, &ProbeSeq) -> Option<R>,
-    ) -> Result<Bucket<T>, R> {
+    ) -> Result<(usize, Bucket<T>), R> {
         let h2_hash = h2(hash);
         let mut probe_seq = self.info().probe_seq(hash);
         let mut group = Group::load(self.info().ctrl(probe_seq.pos));
@@ -519,7 +527,7 @@ impl<T> TableRef<T> {
                 let bucket = self.bucket(index);
                 let elm = self.bucket(index).as_ref();
                 if likely(eq(elm)) {
-                    return Ok(bucket);
+                    return Ok((index, bucket));
                 }
 
                 // Look at the next bit
@@ -538,9 +546,9 @@ impl<T> TableRef<T> {
 
     /// Searches for an element in the table.
     #[inline]
-    unsafe fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+    unsafe fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<(usize, Bucket<T>)> {
         self.search(hash, eq, |group, _| {
-            if likely(group.match_empty().any_bit_set()) {
+            if likely(group.match_empty_or_deleted().any_bit_set()) {
                 Some(())
             } else {
                 None
@@ -555,9 +563,9 @@ impl<T> TableRef<T> {
         &self,
         hash: u64,
         eq: impl FnMut(&T) -> bool,
-    ) -> Result<Bucket<T>, PotentialSlot<'static>> {
+    ) -> Result<(usize, Bucket<T>), PotentialSlot<'static>> {
         self.search(hash, eq, |group, probe_seq| {
-            let bit = group.match_empty().lowest_set_bit();
+            let bit = group.match_empty_or_deleted().lowest_set_bit();
             if likely(bit.is_some()) {
                 let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
                 Some(PotentialSlot {
@@ -671,14 +679,15 @@ impl<T, S> SyncInsertTable<T, S> {
 
     /// Searches for an element in the table.
     #[inline]
-    fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
+    fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<(usize, Bucket<T>)> {
         unsafe { self.current().find(hash, eq) }
     }
 
     /// Gets a mutable reference to an element in the table.
     #[inline]
     pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
-        self.find(hash, eq).map(|bucket| unsafe { bucket.as_mut() })
+        self.find(hash, eq)
+            .map(|(_, bucket)| unsafe { bucket.as_mut() })
     }
 
     /// Gets a reference to the underlying mutex that protects writes.
@@ -781,7 +790,7 @@ impl<'a, T, S> Read<'a, T, S> {
         eq: impl FnMut(&T) -> bool,
     ) -> Result<&'a T, PotentialSlot<'a>> {
         match unsafe { self.table.current().find_potential(hash, eq) } {
-            Ok(bucket) => Ok(unsafe { bucket.as_ref() }),
+            Ok((_, bucket)) => Ok(unsafe { bucket.as_ref() }),
             Err(slot) => Err(slot),
         }
     }
@@ -791,7 +800,7 @@ impl<'a, T, S> Read<'a, T, S> {
     pub fn get(self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
         self.table
             .find(hash, eq)
-            .map(|bucket| unsafe { bucket.as_ref() })
+            .map(|(_, bucket)| unsafe { bucket.as_ref() })
     }
 
     /// Returns the number of elements the map can hold without reallocating.
@@ -900,6 +909,26 @@ impl<T, S> Write<'_, T, S> {
     #[inline]
     pub fn read(&self) -> Read<'_, T, S> {
         Read { table: self.table }
+    }
+}
+
+impl<'a, T: Send + Clone, S> Write<'a, T, S> {
+    /// Removes an element from the table, and returns a reference to it if was present.
+    #[inline]
+    pub fn remove(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
+        let table = self.table.current();
+
+        unsafe {
+            table.find(hash, eq).map(|(index, bucket)| {
+                debug_assert!(is_full(*table.info().ctrl(index)));
+                table.info().set_ctrl_release(index, DELETED);
+                table.info().tombstones.store(
+                    table.info().tombstones.load(Ordering::Relaxed) + 1,
+                    Ordering::Release,
+                );
+                bucket.as_ref()
+            })
+        }
     }
 }
 
@@ -1261,10 +1290,6 @@ impl<'a, T> Iterator for Iter<'a, T> {
             None => None,
         }
     }
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
-    }
 }
 
 impl<T> FusedIterator for Iter<'_, T> {}
@@ -1345,6 +1370,15 @@ fn h2(hash: u64) -> u8 {
 
 /// Control byte value for an empty bucket.
 const EMPTY: u8 = 0b1111_1111;
+
+/// Control byte value for a deleted bucket.
+const DELETED: u8 = 0b1000_0000;
+
+/// Checks whether a control byte represents a full bucket (top bit is clear).
+#[inline]
+fn is_full(ctrl: u8) -> bool {
+    ctrl & 0x80 == 0
+}
 
 /// Probe sequence based on triangular numbers, which is guaranteed (since our
 /// table size is a power of two) to visit every group of elements exactly once.
@@ -1478,7 +1512,6 @@ impl<T> FusedIterator for RawIterRange<T> {}
 ///   change in the future.
 struct RawIter<T> {
     iter: RawIterRange<T>,
-    items: usize,
 }
 
 impl<T> Clone for RawIter<T> {
@@ -1486,7 +1519,6 @@ impl<T> Clone for RawIter<T> {
     fn clone(&self) -> Self {
         Self {
             iter: self.iter.clone(),
-            items: self.items,
         }
     }
 }
@@ -1497,16 +1529,10 @@ impl<T> Iterator for RawIter<T> {
     #[inline]
     fn next(&mut self) -> Option<Bucket<T>> {
         if let Some(b) = self.iter.next() {
-            self.items -= 1;
             Some(b)
         } else {
             None
         }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.items, None)
     }
 }
 

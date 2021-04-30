@@ -55,6 +55,19 @@ fn test_replace() {
 }
 
 #[test]
+fn test_remove() {
+    let m = SyncInsertTable::new();
+    m.lock().map_insert(2, 7);
+    m.lock().map_insert(5, 3);
+    m.lock().remove(m.hash_any(&2), |v| v.0 == 2);
+    m.lock().remove(m.hash_any(&5), |v| v.0 == 5);
+    assert_eq!(m.lock().read().map_get(&2), None);
+    assert_eq!(m.lock().read().map_get(&5), None);
+    assert_eq!(m.lock().read().len(), 0);
+    release();
+}
+
+#[test]
 fn test_insert() {
     let m = SyncInsertTable::new();
     assert_eq!(m.lock().read().len(), 0);

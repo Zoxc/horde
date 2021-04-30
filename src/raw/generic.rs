@@ -106,7 +106,7 @@ impl Group {
     /// Returns a `BitMask` indicating all bytes in the group which are
     /// `EMPTY` or `DELETED`.
     #[inline]
-    pub fn match_empty(self) -> BitMask {
+    pub fn match_empty_or_deleted(self) -> BitMask {
         // A byte is EMPTY or DELETED iff the high bit is set
         BitMask((self.0 & repeat(0x80)).to_le())
     }
@@ -114,6 +114,6 @@ impl Group {
     /// Returns a `BitMask` indicating all bytes in the group which are full.
     #[inline]
     pub fn match_full(self) -> BitMask {
-        self.match_empty().invert()
+        self.match_empty_or_deleted().invert()
     }
 }
