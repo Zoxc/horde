@@ -67,7 +67,7 @@ impl<T> Clone for Bucket<T> {
 
 impl<T> Bucket<T> {
     #[inline]
-    pub fn as_ptr(&self) -> *mut T {
+    fn as_ptr(&self) -> *mut T {
         if mem::size_of::<T>() == 0 {
             // Just return an arbitrary ZST pointer which is properly aligned
             mem::align_of::<T>() as *mut T
@@ -87,19 +87,19 @@ impl<T> Bucket<T> {
         }
     }
     #[inline]
-    pub unsafe fn drop(&self) {
+    unsafe fn drop(&self) {
         self.as_ptr().drop_in_place();
     }
     #[inline]
-    pub unsafe fn write(&self, val: T) {
+    unsafe fn write(&self, val: T) {
         self.as_ptr().write(val);
     }
     #[inline]
-    pub unsafe fn as_ref<'a>(&self) -> &'a T {
+    unsafe fn as_ref<'a>(&self) -> &'a T {
         &*self.as_ptr()
     }
     #[inline]
-    pub unsafe fn as_mut<'a>(&self) -> &'a mut T {
+    unsafe fn as_mut<'a>(&self) -> &'a mut T {
         &mut *self.as_ptr()
     }
 }
@@ -107,7 +107,7 @@ impl<T> Bucket<T> {
 impl<K, V> Bucket<(K, V)> {
     #[inline]
     pub unsafe fn as_pair_ref<'a>(&self) -> (&'a K, &'a V) {
-        let pair = self.as_ref();
+        let pair = &*self.as_ptr();
         (&pair.0, &pair.1)
     }
 }
