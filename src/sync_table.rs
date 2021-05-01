@@ -18,7 +18,7 @@ use std::{
     fmt,
     hash::BuildHasher,
     intrinsics::{likely, unlikely},
-    iter::FusedIterator,
+    iter::{FromIterator, FusedIterator},
     marker::PhantomData,
     mem,
     sync::atomic::{AtomicU8, Ordering},
@@ -635,7 +635,7 @@ impl<T> DestroyTable<T> {
     }
 }
 
-unsafe impl<#[may_dangle] K, V, S> Drop for SyncTable<K, V, S> {
+unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -838,11 +838,7 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
 impl<'a, K, V, S> Read<'a, K, V, S> {
     /// Gets a reference to an element in the table with a custom equality function.
     #[inline]
-    pub fn get_eq<Q>(
-        self,
-        hash: u64,
-        mut eq: impl FnMut(&K, &V) -> bool,
-    ) -> Option<(&'a K, &'a V)> {
+    pub fn get_eq(self, hash: u64, mut eq: impl FnMut(&K, &V) -> bool) -> Option<(&'a K, &'a V)> {
         unsafe {
             self.table
                 .current()
@@ -1121,10 +1117,10 @@ impl<K: Hash + Send, V: Send, S: BuildHasher> Write<'_, K, V, S> {
     }
 }
 
-impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> SyncTable<K, V, S> {
-    /// Create a table which works as a hash map from an iterator.
-    #[inline]
-    pub fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> FromIterator<(K, V)>
+    for SyncTable<K, V, S>
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let iter = iter.into_iter();
         let mut map = Self::new_with(S::default(), iter.size_hint().0);
         {
