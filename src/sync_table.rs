@@ -277,7 +277,7 @@ impl TableInfo {
         let mut probe_seq = self.probe_seq(hash);
         loop {
             let group = Group::load(self.ctrl(probe_seq.pos));
-            if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
+            if let Some(bit) = group.match_empty().lowest_set_bit() {
                 let result = (probe_seq.pos + bit) & self.bucket_mask;
 
                 return result;
@@ -550,7 +550,7 @@ impl<T> TableRef<T> {
     #[inline]
     unsafe fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<(usize, Bucket<T>)> {
         self.search(hash, eq, |group, _| {
-            if likely(group.match_empty_or_deleted().any_bit_set()) {
+            if likely(group.match_empty().any_bit_set()) {
                 Some(())
             } else {
                 None
@@ -567,7 +567,7 @@ impl<T> TableRef<T> {
         eq: impl FnMut(&T) -> bool,
     ) -> Result<(usize, Bucket<T>), PotentialSlot<'static>> {
         self.search(hash, eq, |group, probe_seq| {
-            let bit = group.match_empty_or_deleted().lowest_set_bit();
+            let bit = group.match_empty().lowest_set_bit();
             if likely(bit.is_some()) {
                 let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
                 Some(PotentialSlot {

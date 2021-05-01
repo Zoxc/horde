@@ -104,6 +104,13 @@ impl Group {
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which are
+    /// `EMPTY`.
+    #[inline]
+    pub fn match_empty(self) -> BitMask {
+        self.match_byte(EMPTY)
+    }
+
+    /// Returns a `BitMask` indicating all bytes in the group which are
     /// `EMPTY` or `DELETED`.
     #[inline]
     pub fn match_empty_or_deleted(self) -> BitMask {
