@@ -2,8 +2,12 @@
 name = "horde"
 version = "0.0.1"
 edition = "2018"
+authors = ["Zoxc <zoxc32@gmail.com>"]
 description = "a horde of threads"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Zoxc/horde"
+keywords = ["atomic", "concurrent", "hashmap", "lock-free"]
+categories = ["concurrency", "data-structures"]
 publish = false
 
 [lib]
