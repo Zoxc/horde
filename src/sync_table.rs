@@ -701,21 +701,6 @@ impl<K, V, S> SyncTable<K, V, S> {
         &self.hash_builder
     }
 
-    /// Gets a mutable reference to an element in the table.
-    #[inline]
-    pub fn get_mut<Q>(&mut self, key: &Q, hash: u64) -> Option<(&mut K, &mut V)>
-    where
-        K: Borrow<Q>,
-        Q: ?Sized + Eq,
-    {
-        unsafe {
-            self.current().find(hash, eq(key)).map(|(_, bucket)| {
-                let pair = bucket.as_mut();
-                (&mut pair.0, &mut pair.1)
-            })
-        }
-    }
-
     /// Gets a reference to the underlying mutex that protects writes.
     #[inline]
     pub fn mutex(&self) -> &Mutex<()> {
@@ -790,6 +775,23 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
     pub fn hash_any<T: Hash + ?Sized>(&self, val: &T) -> u64 {
         make_insert_hash(&self.hash_builder, val)
     }
+
+    /// Gets a mutable reference to an element in the table.
+    #[inline]
+    pub fn get_mut<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&mut K, &mut V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq + Hash,
+    {
+        let hash = self.unwrap_hash(key, hash);
+
+        unsafe {
+            self.current().find(hash, eq(key)).map(|(_, bucket)| {
+                let pair = bucket.as_mut();
+                (&mut pair.0, &mut pair.1)
+            })
+        }
+    }
 }
 
 impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
@@ -834,6 +836,21 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
 }
 
 impl<'a, K, V, S> Read<'a, K, V, S> {
+    /// Gets a reference to an element in the table with a custom equality function.
+    #[inline]
+    pub fn get_eq<Q>(
+        self,
+        hash: u64,
+        mut eq: impl FnMut(&K, &V) -> bool,
+    ) -> Option<(&'a K, &'a V)> {
+        unsafe {
+            self.table
+                .current()
+                .find(hash, |(k, v)| eq(k, v))
+                .map(|(_, bucket)| bucket.as_pair_ref())
+        }
+    }
+
     /// Returns the number of elements the map can hold without reallocating.
     #[inline]
     pub fn capacity(self) -> usize {
@@ -932,14 +949,16 @@ impl<K, V, S> Write<'_, K, V, S> {
     }
 }
 
-impl<'a, K: Send, V: Send + Clone, S> Write<'a, K, V, S> {
+impl<'a, K: Send, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Removes an element from the table, and returns a reference to it if was present.
     #[inline]
-    pub fn remove<Q>(&mut self, key: &Q, hash: u64) -> Option<(&'a K, &'a V)>
+    pub fn remove<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&'a K, &'a V)>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Eq,
+        Q: ?Sized + Eq + Hash,
     {
+        let hash = self.table.unwrap_hash(key, hash);
+
         let table = self.table.current();
 
         unsafe {
