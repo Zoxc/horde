@@ -1,12 +1,12 @@
-//! An insert-only hash table with lock-free reads.
+//! A hash table with lock-free reads.
 //!
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{self, Pin},
+    collect::{self, pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
-    util::{cold_path, equivalent_key, make_hash, make_insert_hash},
+    util::{cold_path, make_insert_hash},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
@@ -31,9 +31,19 @@ use std::{ops::DerefMut, sync::atomic::AtomicUsize};
 mod code;
 mod tests;
 
-// TODO: Add an API for `get` which returns the exact control byte a key would be inserted in.
-// Add fast paths for insertions and finds which only tests that one byte with a fallback
-// with a full search.
+#[inline]
+fn hasher<K: Hash, V, S: BuildHasher>(hash_builder: &S, val: &(K, V)) -> u64 {
+    make_insert_hash(hash_builder, &val.0)
+}
+
+#[inline]
+fn eq<Q, K, V>(key: &Q) -> impl Fn(&(K, V)) -> bool + '_
+where
+    K: Borrow<Q>,
+    Q: ?Sized + Eq,
+{
+    move |x| key.eq(x.0.borrow())
+}
 
 /// A reference to a hash table bucket containing a `T`.
 ///
@@ -94,33 +104,41 @@ impl<T> Bucket<T> {
     }
 }
 
+impl<K, V> Bucket<(K, V)> {
+    #[inline]
+    pub unsafe fn as_pair_ref<'a>(&self) -> (&'a K, &'a V) {
+        let pair = self.as_ref();
+        (&pair.0, &pair.1)
+    }
+}
+
 /// A handle to a [SyncTable] with read access.
 ///
 /// It is acquired either by a pin, or by exclusive access to the table.
-pub struct Read<'a, T, S = DefaultHashBuilder> {
-    table: &'a SyncTable<T, S>,
+pub struct Read<'a, K, V, S = DefaultHashBuilder> {
+    table: &'a SyncTable<K, V, S>,
 }
 
-impl<T, S> Copy for Read<'_, T, S> {}
-impl<T, S> Clone for Read<'_, T, S> {
+impl<K, V, S> Copy for Read<'_, K, V, S> {}
+impl<K, V, S> Clone for Read<'_, K, V, S> {
     fn clone(&self) -> Self {
         Self { table: self.table }
     }
 }
 
 /// A handle to a [SyncTable] with write access.
-pub struct Write<'a, T, S = DefaultHashBuilder> {
-    table: &'a SyncTable<T, S>,
+pub struct Write<'a, K, V, S = DefaultHashBuilder> {
+    table: &'a SyncTable<K, V, S>,
 }
 
 /// A handle to a [SyncTable] with write access protected by a lock.
-pub struct LockedWrite<'a, T, S = DefaultHashBuilder> {
-    table: Write<'a, T, S>,
+pub struct LockedWrite<'a, K, V, S = DefaultHashBuilder> {
+    table: Write<'a, K, V, S>,
     _guard: MutexGuard<'a, ()>,
 }
 
-impl<'a, T, S> Deref for LockedWrite<'a, T, S> {
-    type Target = Write<'a, T, S>;
+impl<'a, K, V, S> Deref for LockedWrite<'a, K, V, S> {
+    type Target = Write<'a, K, V, S>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -128,7 +146,7 @@ impl<'a, T, S> Deref for LockedWrite<'a, T, S> {
     }
 }
 
-impl<'a, T, S> DerefMut for LockedWrite<'a, T, S> {
+impl<'a, K, V, S> DerefMut for LockedWrite<'a, K, V, S> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.table
@@ -141,17 +159,17 @@ pub type DefaultHashBuilder = RandomState;
 /// A hash table with lock-free reads.
 ///
 /// It is based on the table from the `hashbrown` crate.
-pub struct SyncTable<T, S = DefaultHashBuilder> {
+pub struct SyncTable<K, V, S = DefaultHashBuilder> {
     hash_builder: S,
 
     current: AtomicPtr<TableInfo>,
 
     lock: Mutex<()>,
 
-    old: UnsafeCell<Vec<Arc<DestroyTable<T>>>>,
+    old: UnsafeCell<Vec<Arc<DestroyTable<(K, V)>>>>,
 
-    // Tell dropck that we own instances of T.
-    marker: PhantomData<T>,
+    // Tell dropck that we own instances of K, V.
+    marker: PhantomData<(K, V)>,
 }
 
 struct TableInfo {
@@ -496,17 +514,15 @@ impl<T> TableRef<T> {
     }
 
     /// Returns an iterator over every element in the table. It is up to
-    /// the caller to ensure that the `SyncTable` outlives the `RawIter`.
-    /// Because we cannot make the `next` method unsafe on the `RawIter`
+    /// the caller to ensure that the table outlives the `RawIterRange`.
+    /// Because we cannot make the `next` method unsafe on the `RawIterRange`
     /// struct, we have to make the `iter` method unsafe.
     #[inline]
-    unsafe fn iter(&self) -> RawIter<T> {
+    unsafe fn iter(&self) -> RawIterRange<T> {
         let data = Bucket {
             ptr: NonNull::new_unchecked(self.bucket_past_last()),
         };
-        RawIter {
-            iter: RawIterRange::new(self.info().ctrl(0), data, self.info().buckets()),
-        }
+        RawIterRange::new(self.info().ctrl(0), data, self.info().buckets())
     }
 
     /// Searches for an element in the table.
@@ -584,7 +600,7 @@ impl<T> TableRef<T> {
 impl<T: Clone> TableRef<T> {
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
-    unsafe fn clone<S>(
+    unsafe fn clone_table<S>(
         &self,
         hash_builder: &S,
         buckets: usize,
@@ -619,7 +635,7 @@ impl<T> DestroyTable<T> {
     }
 }
 
-unsafe impl<#[may_dangle] T, S> Drop for SyncTable<T, S> {
+unsafe impl<#[may_dangle] K, V, S> Drop for SyncTable<K, V, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -631,17 +647,17 @@ unsafe impl<#[may_dangle] T, S> Drop for SyncTable<T, S> {
     }
 }
 
-unsafe impl<T: Send, S> Send for SyncTable<T, S> {}
-unsafe impl<T: Sync, S> Sync for SyncTable<T, S> {}
+unsafe impl<K: Send, V: Send, S> Send for SyncTable<K, V, S> {}
+unsafe impl<K: Sync, V: Sync, S> Sync for SyncTable<K, V, S> {}
 
-impl<T, S: Default> Default for SyncTable<T, S> {
+impl<K, V, S: Default> Default for SyncTable<K, V, S> {
     #[inline]
     fn default() -> Self {
         Self::new_with(Default::default(), 0)
     }
 }
 
-impl<T> SyncTable<T, DefaultHashBuilder> {
+impl<K, V> SyncTable<K, V, DefaultHashBuilder> {
     /// Creates an empty [SyncTable].
     ///
     /// The hash map is initially created with a capacity of 0, so it will not allocate until it
@@ -652,7 +668,7 @@ impl<T> SyncTable<T, DefaultHashBuilder> {
     }
 }
 
-impl<T, S> SyncTable<T, S> {
+impl<K, V, S> SyncTable<K, V, S> {
     /// Creates an empty [SyncTable] with the specified capacity, using `hash_builder`
     /// to hash the elements or keys.
     ///
@@ -664,7 +680,7 @@ impl<T, S> SyncTable<T, S> {
             hash_builder,
             current: AtomicPtr::new(
                 if capacity > 0 {
-                    TableRef::<T>::allocate(
+                    TableRef::<(K, V)>::allocate(
                         capacity_to_buckets(capacity).expect("capacity overflow"),
                     )
                 } else {
@@ -679,17 +695,25 @@ impl<T, S> SyncTable<T, S> {
         }
     }
 
-    /// Searches for an element in the table.
+    /// Returns a reference to the table's `BuildHasher`.
     #[inline]
-    fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<(usize, Bucket<T>)> {
-        unsafe { self.current().find(hash, eq) }
+    pub fn hasher(&self) -> &S {
+        &self.hash_builder
     }
 
     /// Gets a mutable reference to an element in the table.
     #[inline]
-    pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
-        self.find(hash, eq)
-            .map(|(_, bucket)| unsafe { bucket.as_mut() })
+    pub fn get_mut<Q>(&mut self, key: &Q, hash: u64) -> Option<(&mut K, &mut V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq,
+    {
+        unsafe {
+            self.current().find(hash, eq(key)).map(|(_, bucket)| {
+                let pair = bucket.as_mut();
+                (&mut pair.0, &mut pair.1)
+            })
+        }
     }
 
     /// Gets a reference to the underlying mutex that protects writes.
@@ -702,7 +726,7 @@ impl<T, S> SyncTable<T, S> {
     ///
     /// Use [crate::collect::pin] to get a `Pin` instance.
     #[inline]
-    pub fn read<'a>(&'a self, pin: Pin<'a>) -> Read<'a, T, S> {
+    pub fn read<'a>(&'a self, pin: Pin<'a>) -> Read<'a, K, V, S> {
         let _pin = pin;
         Read { table: self }
     }
@@ -712,19 +736,19 @@ impl<T, S> SyncTable<T, S> {
     /// # Safety
     /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
-    pub unsafe fn unsafe_write(&self) -> Write<'_, T, S> {
+    pub unsafe fn unsafe_write(&self) -> Write<'_, K, V, S> {
         Write { table: self }
     }
 
     /// Creates a [Write] handle from a mutable reference.
     #[inline]
-    pub fn write(&mut self) -> Write<'_, T, S> {
+    pub fn write(&mut self) -> Write<'_, K, V, S> {
         Write { table: self }
     }
 
     /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
-    pub fn lock(&self) -> LockedWrite<'_, T, S> {
+    pub fn lock(&self) -> LockedWrite<'_, K, V, S> {
         LockedWrite {
             table: Write { table: self },
             _guard: self.lock.lock(),
@@ -733,7 +757,7 @@ impl<T, S> SyncTable<T, S> {
 
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
     #[inline]
-    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, T, S> {
+    pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, K, V, S> {
         // Verify that we are target of the guard
         assert_eq!(
             &self.lock as *const _,
@@ -747,7 +771,7 @@ impl<T, S> SyncTable<T, S> {
     }
 
     #[inline]
-    fn current(&self) -> TableRef<T> {
+    fn current(&self) -> TableRef<(K, V)> {
         TableRef {
             data: unsafe { NonNull::new_unchecked(self.current.load(Ordering::Acquire)) },
             marker: PhantomData,
@@ -755,54 +779,44 @@ impl<T, S> SyncTable<T, S> {
     }
 }
 
-impl<T, S: BuildHasher> SyncTable<T, S> {
+impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
     /// Hashes any hashable value with the hasher the table was constructed with.
     #[inline]
-    pub fn hash_any<V: Hash + ?Sized>(&self, val: &V) -> u64 {
+    pub fn hash_any<T: Hash + ?Sized>(&self, val: &T) -> u64 {
         make_insert_hash(&self.hash_builder, val)
     }
 }
 
-impl<T: Hash, S: BuildHasher> SyncTable<T, S> {
-    /// Hashes a value with the hasher the table was constructed with.
-    /// This can be passed to methods expecting a hasher.
-    #[inline]
-    pub fn hasher(hash_builder: &S, val: &T) -> u64 {
-        make_insert_hash(hash_builder, val)
-    }
-}
-
-impl<K: Hash, V, S: BuildHasher> SyncTable<(K, V), S> {
-    /// Hashes the first element of a pair with the `hash_builder` passed.
-    /// This is useful to treat the table as a hash map and can be passed to methods
-    /// expecting a hasher.
-    #[inline]
-    pub fn map_hasher(hash_builder: &S, val: &(K, V)) -> u64 {
-        make_insert_hash(hash_builder, &val.0)
-    }
-}
-
-impl<'a, T, S> Read<'a, T, S> {
+impl<'a, K, V, S> Read<'a, K, V, S> {
     /// Gets a reference to an element in the table or a potential location
     /// where that element could be.
     #[inline]
-    pub fn get_potential(
-        self,
-        hash: u64,
-        eq: impl FnMut(&T) -> bool,
-    ) -> Result<&'a T, PotentialSlot<'a>> {
-        match unsafe { self.table.current().find_potential(hash, eq) } {
-            Ok((_, bucket)) => Ok(unsafe { bucket.as_ref() }),
-            Err(slot) => Err(slot),
+    pub fn get_potential<Q>(self, key: &Q, hash: u64) -> Result<(&'a K, &'a V), PotentialSlot<'a>>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq,
+    {
+        unsafe {
+            match self.table.current().find_potential(hash, eq(key)) {
+                Ok((_, bucket)) => Ok(bucket.as_pair_ref()),
+                Err(slot) => Err(slot),
+            }
         }
     }
 
     /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get(self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
-        self.table
-            .find(hash, eq)
-            .map(|(_, bucket)| unsafe { bucket.as_ref() })
+    pub fn get<Q>(self, key: &Q, hash: u64) -> Option<(&'a K, &'a V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq,
+    {
+        unsafe {
+            self.table
+                .current()
+                .find(hash, eq(key))
+                .map(|(_, bucket)| bucket.as_pair_ref())
+        }
     }
 
     /// Returns the number of elements the map can hold without reallocating.
@@ -820,7 +834,7 @@ impl<'a, T, S> Read<'a, T, S> {
     /// An iterator visiting all key-value pairs in arbitrary order.
     /// The iterator element type is `(&'a K, &'a V)`.
     #[inline]
-    pub fn iter(self) -> Iter<'a, T> {
+    pub fn iter(self) -> Iter<'a, K, V> {
         let table = self.table.current();
 
         // Here we tie the lifetime of self to the iter.
@@ -835,7 +849,8 @@ impl<'a, T, S> Read<'a, T, S> {
     #[allow(dead_code)]
     fn dump(self)
     where
-        T: std::fmt::Debug,
+        K: std::fmt::Debug,
+        V: std::fmt::Debug,
     {
         let table = self.table.current();
 
@@ -860,122 +875,137 @@ impl<'a, T, S> Read<'a, T, S> {
     }
 }
 
-impl<'a, T: Clone, S: Clone> Read<'a, T, S> {
-    /// Returns a new copy of the table.
-    #[inline]
-    pub fn clone(self, hasher: impl Fn(&S, &T) -> u64) -> SyncTable<T, S> {
-        // TODO: Optimize
-        let table = self.table.current();
-        unsafe {
-            let buckets = table.info().buckets();
+impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V, S> {
+    fn clone(&self) -> SyncTable<K, V, S> {
+        pin(|_pin| {
+            let table = self.current();
 
-            SyncTable {
-                hash_builder: self.table.hash_builder.clone(),
-                current: AtomicPtr::new(
-                    if buckets > 0 {
-                        table.clone(&self.table.hash_builder, buckets, hasher)
-                    } else {
-                        TableRef::empty()
-                    }
-                    .data
-                    .as_ptr(),
-                ),
-                old: UnsafeCell::new(Vec::new()),
-                marker: PhantomData,
-                lock: Mutex::new(()),
+            unsafe {
+                let buckets = table.info().buckets();
+
+                SyncTable {
+                    hash_builder: self.hash_builder.clone(),
+                    current: AtomicPtr::new(
+                        if buckets > 0 {
+                            table.clone_table(&self.hash_builder, buckets, hasher)
+                        } else {
+                            TableRef::empty()
+                        }
+                        .data
+                        .as_ptr(),
+                    ),
+                    old: UnsafeCell::new(Vec::new()),
+                    marker: PhantomData,
+                    lock: Mutex::new(()),
+                }
             }
-        }
+        })
     }
 }
 
-impl<'a, K: Eq + Hash + Clone, V: Clone, S: BuildHasher> Read<'a, (K, V), S> {
-    /// Treat the table as a hash map and lookup a given key.
-    #[inline]
-    pub fn map_get<Q: ?Sized>(self, k: &Q) -> Option<&'a V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let hash = make_hash::<K, Q, S>(&self.table.hash_builder, k);
-
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.get(hash, equivalent_key(k)) {
-            Some(&(_, ref v)) => Some(v),
-            None => None,
-        }
-    }
-}
-
-impl<T, S> Write<'_, T, S> {
+impl<K, V, S> Write<'_, K, V, S> {
     /// Creates a [Read] handle which gives access to read operations.
     #[inline]
-    pub fn read(&self) -> Read<'_, T, S> {
+    pub fn read(&self) -> Read<'_, K, V, S> {
         Read { table: self.table }
+    }
+
+    /// Returns a reference to the table's `BuildHasher`.
+    #[inline]
+    pub fn hasher(&self) -> &S {
+        &self.table.hash_builder
     }
 }
 
-impl<'a, T: Send + Clone, S> Write<'a, T, S> {
+impl<'a, K: Send, V: Send + Clone, S> Write<'a, K, V, S> {
     /// Removes an element from the table, and returns a reference to it if was present.
     #[inline]
-    pub fn remove(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
+    pub fn remove<Q>(&mut self, key: &Q, hash: u64) -> Option<(&'a K, &'a V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq,
+    {
         let table = self.table.current();
 
         unsafe {
-            table.find(hash, eq).map(|(index, bucket)| {
+            table.find(hash, eq(key)).map(|(index, bucket)| {
                 debug_assert!(is_full(*table.info().ctrl(index)));
                 table.info().set_ctrl_release(index, DELETED);
                 table.info().tombstones.store(
                     table.info().tombstones.load(Ordering::Relaxed) + 1,
                     Ordering::Release,
                 );
-                bucket.as_ref()
+                bucket.as_pair_ref()
             })
         }
     }
 }
 
-impl<'a, T: Send + Clone, S> Write<'a, T, S> {
-    /// Inserts a new element into the table, and returns a reference to it.
-    ///
-    /// This does not check if the given element already exists in the table.
+impl<'a, K: Hash + Eq + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
+    /// Inserts a element into the table.
+    /// Returns `false` if it already exists and doesn't update the value.
     #[inline]
-    pub fn insert_new(&mut self, hash: u64, value: T, hasher: impl Fn(&S, &T) -> u64) -> &'a T {
+    pub fn insert(&mut self, key: K, value: V, hash: u64) -> bool {
         let mut table = self.table.current();
 
         unsafe {
             if unlikely(table.info().growth_left.load(Ordering::Relaxed) == 0) {
-                table = self.expand_by_one(&hasher);
+                table = self.expand_by_one();
+            }
+
+            match table.find_potential(hash, eq(&key)) {
+                Ok(_) => false,
+                Err(slot) => {
+                    slot.insert_new_unchecked(self, key, value, hash);
+                    true
+                }
+            }
+        }
+    }
+}
+
+impl<'a, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
+    /// Inserts a new element into the table, and returns a reference to it.
+    ///
+    /// This does not check if the given element already exists in the table.
+    #[inline]
+    pub fn insert_new(&mut self, key: K, value: V, hash: u64) -> (&'a K, &'a V) {
+        let mut table = self.table.current();
+
+        unsafe {
+            if unlikely(table.info().growth_left.load(Ordering::Relaxed) == 0) {
+                table = self.expand_by_one();
             }
 
             let index = table.info().find_insert_slot(hash);
 
             let bucket = table.bucket(index);
-            bucket.write(value);
+            bucket.write((key, value));
 
             table.info().record_item_insert_at(index, hash);
 
-            bucket.as_ref()
+            bucket.as_pair_ref()
         }
     }
 
     /// Reserve room for one more element.
     #[inline]
-    pub fn reserve_one(&mut self, hasher: impl Fn(&S, &T) -> u64) {
+    pub fn reserve_one(&mut self) {
         let table = self.table.current();
 
         if unlikely(unsafe { table.info().growth_left.load(Ordering::Relaxed) } == 0) {
-            self.expand_by_one(&hasher);
+            self.expand_by_one();
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn expand_by_one(&mut self, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
-        self.expand_by(1, hasher)
+    fn expand_by_one(&mut self) -> TableRef<(K, V)> {
+        self.expand_by(1)
     }
 
     /// Out-of-line slow path for `reserve` and `try_reserve`.
-    fn expand_by(&mut self, additional: usize, hasher: &impl Fn(&S, &T) -> u64) -> TableRef<T> {
+    fn expand_by(&mut self, additional: usize) -> TableRef<(K, V)> {
         let table = self.table.current();
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
@@ -994,7 +1024,7 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
 
         let buckets = capacity_to_buckets(new_capacity).expect("capacity overflow");
 
-        let new_table = unsafe { table.clone(&self.table.hash_builder, buckets, hasher) };
+        let new_table = unsafe { table.clone_table(&self.table.hash_builder, buckets, hasher) };
 
         self.replace_table(new_table);
 
@@ -1002,8 +1032,8 @@ impl<'a, T: Send + Clone, S> Write<'a, T, S> {
     }
 }
 
-impl<T: Send, S> Write<'_, T, S> {
-    fn replace_table(&mut self, new_table: TableRef<T>) {
+impl<K: Hash + Send, V: Send, S: BuildHasher> Write<'_, K, V, S> {
+    fn replace_table(&mut self, new_table: TableRef<(K, V)>) {
         let table = self.table.current();
 
         self.table
@@ -1026,12 +1056,7 @@ impl<T: Send, S> Write<'_, T, S> {
     /// All the elements must be unique.
     /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
     #[inline]
-    pub fn replace<I: IntoIterator<Item = T>>(
-        &mut self,
-        iter: I,
-        capacity: usize,
-        hasher: impl Fn(&S, &T) -> u64,
-    ) {
+    pub fn replace<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I, capacity: usize) {
         let iter = iter.into_iter();
 
         let table = if let Some(max) = iter.size_hint().1 {
@@ -1058,41 +1083,17 @@ impl<T: Send, S> Write<'_, T, S> {
     }
 }
 
-impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher> Write<'_, (K, V), S> {
-    /// Treat the table as a hash map and insert a key-value pair where `hash` is the key's hash.
-    #[inline]
-    pub fn map_insert_with_hash(&mut self, k: K, v: V, hash: u64) -> Option<(K, V)> {
-        self.reserve_one(SyncTable::map_hasher);
-        let table = self.table.current();
-        match unsafe { table.find_potential(hash, equivalent_key(&k)) } {
-            Ok(_) => Some((k, v)),
-            Err(potential) => {
-                unsafe {
-                    potential.insert_new_unchecked(self, hash, (k, v));
-                };
-                None
-            }
-        }
-    }
-
-    /// Treat the table as a hash map and insert a key-value pair.
-    #[inline]
-    pub fn map_insert(&mut self, k: K, v: V) -> Option<(K, V)> {
-        let hash = self.table.hash_any(&k);
-        self.map_insert_with_hash(k, v, hash)
-    }
-}
-
-impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> SyncTable<(K, V), S> {
+impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> SyncTable<K, V, S> {
     /// Create a table which works as a hash map from an iterator.
     #[inline]
-    pub fn map_from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+    pub fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let mut map = Self::new_with(S::default(), iter.size_hint().0);
         {
             let mut write = map.write();
             iter.for_each(|(k, v)| {
-                write.map_insert(k, v);
+                let hash = make_insert_hash(write.hasher(), &k);
+                write.insert(k, v, hash);
             });
         }
         map
@@ -1125,62 +1126,76 @@ impl<'a> PotentialSlot<'a> {
 
     /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get<T, S>(
+    pub fn get<'b, Q, K, V, S>(
         self,
-        table: Read<'_, T, S>,
+        table: Read<'b, K, V, S>,
+        key: &Q,
         hash: u64,
-        eq: impl FnMut(&T) -> bool,
-    ) -> Option<&T> {
+    ) -> Option<(&'b K, &'b V)>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq,
+    {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
                 return None;
             }
         }
 
-        cold_path(|| table.get(hash, eq))
+        cold_path(|| table.get(key, hash))
     }
 
     /// Returns a new up-to-date potential slot.
     /// This can be useful if there could have been insertions since the slot was derived
     /// and you want to use `try_insert_new` or `insert_new_unchecked`.
     #[inline]
-    pub fn refresh<T, S>(
+    pub fn refresh<Q, K, V, S>(
         self,
-        table: Read<'a, T, S>,
+        table: Read<'a, K, V, S>,
+        key: &Q,
         hash: u64,
-        eq: impl FnMut(&T) -> bool,
-    ) -> Result<&T, PotentialSlot<'a>> {
+    ) -> Result<(&'a K, &'a V), PotentialSlot<'a>>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Eq,
+    {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
                 return Err(self);
             }
         }
 
-        cold_path(|| table.get_potential(hash, eq))
+        cold_path(|| table.get_potential(key, hash))
     }
 
     #[inline]
-    unsafe fn insert<'b, T>(self, table: TableRef<T>, value: T, hash: u64) -> &'b T {
+    unsafe fn insert<'b, K, V>(
+        self,
+        table: TableRef<(K, V)>,
+        value: (K, V),
+        hash: u64,
+    ) -> (&'b K, &'b V) {
         let index = self.index;
         let bucket = table.bucket(index);
         bucket.write(value);
 
         table.info().record_item_insert_at(index, hash);
 
-        bucket.as_ref()
+        let pair = bucket.as_ref();
+        (&pair.0, &pair.1)
     }
 
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new<'b, T: Send + Clone, S>(
+    pub fn insert_new<'b, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher>(
         self,
-        table: &mut Write<'b, T, S>,
+        table: &mut Write<'b, K, V, S>,
+        key: K,
+        value: V,
         hash: u64,
-        value: T,
-        hasher: impl Fn(&S, &T) -> u64,
-    ) -> &'b T {
+    ) -> (&'b K, &'b V) {
         unsafe {
             let table = table.table.current();
 
@@ -1188,11 +1203,11 @@ impl<'a> PotentialSlot<'a> {
             {
                 debug_assert_eq!(self.index, table.info().find_insert_slot(hash));
 
-                return self.insert(table, value, hash);
+                return self.insert(table, (key, value), hash);
             }
         }
 
-        cold_path(|| table.insert_new(hash, value, hasher))
+        cold_path(|| table.insert_new(key, value, hash))
     }
 
     /// Inserts a new element into the table, and returns a reference to it.
@@ -1201,18 +1216,19 @@ impl<'a> PotentialSlot<'a> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn try_insert_new<'b, T, S>(
+    pub fn try_insert_new<'b, K, V, S>(
         self,
-        table: &mut Write<'b, T, S>,
+        table: &mut Write<'b, K, V, S>,
+        key: K,
+        value: V,
         hash: u64,
-        value: T,
-    ) -> Option<&'b T> {
+    ) -> Option<(&'b K, &'b V)> {
         unsafe {
             let table = table.table.current();
 
             if likely(self.is_empty(table) && table.info().growth_left.load(Ordering::Relaxed) > 0)
             {
-                Some(self.insert(table, value, hash))
+                Some(self.insert(table, (key, value), hash))
             } else {
                 None
             }
@@ -1232,18 +1248,19 @@ impl<'a> PotentialSlot<'a> {
     /// - There must not have been any insertions or `replace` calls to the table since `self`
     ///   was derived.
     #[inline]
-    pub unsafe fn insert_new_unchecked<'b, T, S>(
+    pub unsafe fn insert_new_unchecked<'b, K, V, S>(
         self,
-        table: &mut Write<'b, T, S>,
+        table: &mut Write<'b, K, V, S>,
+        key: K,
+        value: V,
         hash: u64,
-        value: T,
-    ) -> &'b T {
+    ) -> (&'b K, &'b V) {
         let table = table.table.current();
 
         debug_assert!(self.is_empty(table));
         debug_assert!(table.info().growth_left.load(Ordering::Relaxed) > 0);
 
-        self.insert(table, value, hash)
+        self.insert(table, (key, value), hash)
     }
 }
 
@@ -1254,13 +1271,12 @@ impl<'a> PotentialSlot<'a> {
 ///
 /// [`iter`]: struct.HashMap.html#method.iter
 /// [`HashMap`]: struct.HashMap.html
-pub struct Iter<'a, T> {
-    inner: RawIter<T>,
-    marker: PhantomData<&'a T>,
+pub struct Iter<'a, K, V> {
+    inner: RawIterRange<(K, V)>,
+    marker: PhantomData<&'a (K, V)>,
 }
 
-// FIXME(#26925) Remove in favor of `#[derive(Clone)]`
-impl<T> Clone for Iter<'_, T> {
+impl<K, V> Clone for Iter<'_, K, V> {
     #[inline]
     fn clone(&self) -> Self {
         Iter {
@@ -1270,29 +1286,24 @@ impl<T> Clone for Iter<'_, T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Iter<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.clone()).finish()
     }
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
 
     #[inline]
-    fn next(&mut self) -> Option<&'a T> {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.inner.next() {
-            Some(x) => unsafe {
-                let r = x.as_ref();
-                Some(&r)
-            },
-            None => None,
-        }
+    fn next(&mut self) -> Option<(&'a K, &'a V)> {
+        self.inner
+            .next()
+            .map(|bucket| unsafe { bucket.as_pair_ref() })
     }
 }
 
-impl<T> FusedIterator for Iter<'_, T> {}
+impl<K, V> FusedIterator for Iter<'_, K, V> {}
 
 /// Returns the maximum effective capacity for the given bucket mask, taking
 /// the maximum load factor into account.
@@ -1409,8 +1420,7 @@ impl ProbeSeq {
     }
 }
 
-/// Iterator over a sub-range of a table. Unlike `RawIter` this iterator does
-/// not track an item count.
+/// Iterator over a sub-range of a table.
 struct RawIterRange<T> {
     // Mask of full buckets in the current group. Bits are cleared from this
     // mask as each element is processed.
@@ -1498,47 +1508,8 @@ impl<T> Iterator for RawIterRange<T> {
 
 impl<T> FusedIterator for RawIterRange<T> {}
 
-/// Iterator which returns a raw pointer to every full bucket in the table.
+/// Get a suitable shard index from a hash when sharding the hash table.
 ///
-/// For maximum flexibility this iterator is not bound by a lifetime, but you
-/// must observe several rules when using it:
-/// - You must not free the hash table while iterating (including via growing/shrinking).
-/// - It is fine to erase a bucket that has been yielded by the iterator.
-/// - Erasing a bucket that has not yet been yielded by the iterator may still
-///   result in the iterator yielding that bucket (unless `reflect_remove` is called).
-/// - It is unspecified whether an element inserted after the iterator was
-///   created will be yielded by that iterator (unless `reflect_insert` is called).
-/// - The order in which the iterator yields bucket is unspecified and may
-///   change in the future.
-struct RawIter<T> {
-    iter: RawIterRange<T>,
-}
-
-impl<T> Clone for RawIter<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            iter: self.iter.clone(),
-        }
-    }
-}
-
-impl<T> Iterator for RawIter<T> {
-    type Item = Bucket<T>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Bucket<T>> {
-        if let Some(b) = self.iter.next() {
-            Some(b)
-        } else {
-            None
-        }
-    }
-}
-
-impl<T> FusedIterator for RawIter<T> {}
-
-/// Get a suitable shard index from a hash when sharded the hash table.
 /// `shards` must be a power of 2.
 #[inline]
 pub fn shard_index_by_hash(hash: u64, shards: usize) -> usize {

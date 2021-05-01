@@ -39,7 +39,7 @@ fn intern3_value(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) ->
     match write.read().get(hash, |v| v.0 == k) {
         Some(v) => v.1,
         None => {
-            write.insert_new(hash, (k, v), SyncTable::hasher);
+            write.insert_new((k, v), hash, SyncTable::hasher);
             v
         }
     }
@@ -271,7 +271,7 @@ fn insert_regular(b: &mut Bencher) {
         match write.read().get(hash, |&(k, _)| k == i) {
             Some(_) => (),
             None => {
-                write.insert_new(hash, (i, i * 2), SyncTable::hasher);
+                write.insert_new((i, i * 2), hash, SyncTable::hasher);
             }
         };
     }

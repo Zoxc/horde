@@ -20,7 +20,7 @@ fn high_align() {
 
     table.find(1, |a| a == &A(1));
 
-    table.lock().insert_new(1, A(1), |_, a| a.0);
+    table.lock().insert_new(A(1), 1, |_, a| a.0);
 
     release();
 }
@@ -177,7 +177,7 @@ fn rehash() {
     for i in 0..100 {
         table
             .lock()
-            .insert_new(table.hash_any(&i), i, SyncTable::hasher);
+            .insert_new(i, table.hash_any(&i), SyncTable::hasher);
     }
 
     pin(|pin| {
@@ -278,7 +278,7 @@ fn intern_get_insert() {
         match write.read().get(hash, |v| v.0 == k) {
             Some(_) => true,
             None => {
-                write.insert_new(hash, (k, v), SyncTable::map_hasher);
+                write.insert_new((k, v), hash, SyncTable::map_hasher);
                 false
             }
         }
