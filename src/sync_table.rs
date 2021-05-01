@@ -766,14 +766,22 @@ impl<K, V, S> SyncTable<K, V, S> {
 
 impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
     #[inline]
-    fn unwrap_hash<Q: Hash + ?Sized>(&self, key: &Q, hash: Option<u64>) -> u64 {
-        hash.unwrap_or_else(|| self.hash_any(key))
+    fn unwrap_hash<Q>(&self, key: &Q, hash: Option<u64>) -> u64
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash,
+    {
+        hash.unwrap_or_else(|| self.hash_key(key))
     }
 
-    /// Hashes any hashable value with the hasher the table was constructed with.
+    /// Hashes a key with the table's hasher.
     #[inline]
-    pub fn hash_any<T: Hash + ?Sized>(&self, val: &T) -> u64 {
-        make_insert_hash(&self.hash_builder, val)
+    pub fn hash_key<Q>(&self, key: &Q) -> u64
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash,
+    {
+        make_insert_hash(&self.hash_builder, key)
     }
 
     /// Gets a mutable reference to an element in the table.
@@ -1281,7 +1289,7 @@ impl<'a> PotentialSlot<'a> {
     ///
     /// The following conditions must hold for this function to be safe:
     /// - `table` must be the same table that `self` is derived from.
-    /// - `hash` and `value` must match the value used when `self` was derived.
+    /// - `hash`, `key` and `value` must match the value used when `self` was derived.
     /// - There must not have been any insertions or `replace` calls to the table since `self`
     ///   was derived.
     #[inline]

@@ -232,7 +232,7 @@ fn test_interning(intern: impl Fn(&SyncTable<u64, u64>, u64, u64, Pin<'_>) -> bo
 #[test]
 fn intern_potential() {
     fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
-        let hash = table.hash_any(&k);
+        let hash = table.hash_key(&k);
         let p = match table.read(pin).get_potential(&k, Some(hash)) {
             Ok(_) => return true,
             Err(p) => p,
@@ -257,7 +257,7 @@ fn intern_potential() {
 #[test]
 fn intern_get_insert() {
     fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
-        let hash = table.hash_any(&k);
+        let hash = table.hash_key(&k);
         match table.read(pin).get(&k, Some(hash)) {
             Some(_) => return true,
             None => (),
@@ -279,7 +279,7 @@ fn intern_get_insert() {
 #[test]
 fn intern_potential_try() {
     fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
-        let hash = table.hash_any(&k);
+        let hash = table.hash_key(&k);
         let p = match table.read(pin).get_potential(&k, Some(hash)) {
             Ok(_) => return true,
             Err(p) => p,

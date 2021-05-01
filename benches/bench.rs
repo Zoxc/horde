@@ -29,7 +29,7 @@ fn intern_map() -> SyncTable<u64, u64> {
 
 #[inline(never)]
 fn intern3_value(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
+    let hash = table.hash_key(&k);
     match table.read(pin).get(&k, Some(hash)) {
         Some(v) => return *v.1,
         None => (),
@@ -62,7 +62,7 @@ fn intern3(b: &mut Bencher) {
 
 #[inline(never)]
 fn intern_value(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
+    let hash = table.hash_key(&k);
     let p = match table.read(pin).get_potential(&k, Some(hash)) {
         Ok(v) => return *v.1,
         Err(p) => p,
@@ -95,7 +95,7 @@ fn intern(b: &mut Bencher) {
 
 #[inline(never)]
 fn intern4_value(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
+    let hash = table.hash_key(&k);
     let p = match table.read(pin).get_potential(&k, Some(hash)) {
         Ok(v) => return *v.1,
         Err(p) => p,
@@ -133,7 +133,7 @@ fn intern4(b: &mut Bencher) {
 
 #[inline(never)]
 fn intern5_value(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
+    let hash = table.hash_key(&k);
     let p = match table.read(pin).get_potential(&k, Some(hash)) {
         Ok(v) => return *v.1,
         Err(p) => p,
@@ -189,7 +189,7 @@ fn insert(b: &mut Bencher) {
 fn insert_with_try_potential(b: &mut Bencher) {
     #[inline(never)]
     fn iter(m: &SyncTable<i32, i32>, i: i32, pin: Pin<'_>) {
-        let hash = m.hash_any(&i);
+        let hash = m.hash_key(&i);
         let mut write = m.lock();
         write.reserve_one();
         match m.read(pin).get_potential(&i, Some(hash)) {
@@ -215,7 +215,7 @@ fn insert_with_try_potential(b: &mut Bencher) {
 fn insert_with_unchecked_potential(b: &mut Bencher) {
     #[inline(never)]
     fn iter(m: &SyncTable<i32, i32>, i: i32, pin: Pin<'_>) {
-        let hash = m.hash_any(&i);
+        let hash = m.hash_key(&i);
         let mut write = m.lock();
         write.reserve_one();
         match m.read(pin).get_potential(&i, Some(hash)) {
@@ -241,7 +241,7 @@ fn insert_with_unchecked_potential(b: &mut Bencher) {
 fn insert_with_potential(b: &mut Bencher) {
     #[inline(never)]
     fn iter(m: &SyncTable<i32, i32>, i: i32, pin: Pin<'_>) {
-        let hash = m.hash_any(&i);
+        let hash = m.hash_key(&i);
         let mut write = m.lock();
         match m.read(pin).get_potential(&i, Some(hash)) {
             Ok(_) => (),
@@ -266,7 +266,7 @@ fn insert_with_potential(b: &mut Bencher) {
 fn insert_regular(b: &mut Bencher) {
     #[inline(never)]
     fn iter(m: &SyncTable<i32, i32>, i: i32) {
-        let hash = m.hash_any(&i);
+        let hash = m.hash_key(&i);
         let mut write = m.lock();
         match write.read().get(&i, Some(hash)) {
             Some(_) => (),
