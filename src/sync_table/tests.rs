@@ -13,14 +13,14 @@ use std::{
 #[test]
 fn high_align() {
     #[repr(align(64))]
-    #[derive(Clone, PartialEq)]
+    #[derive(Clone, Eq, PartialEq)]
     struct A(u64);
 
     let table = SyncTable::new();
 
-    table.find(1, |a| a == &A(1));
+    table.get_mut(&A(1));
 
-    table.lock().insert_new(A(1), 1, |_, a| a.0);
+    table.lock().insert_new(A(1), 1, None);
 
     release();
 }
@@ -202,7 +202,7 @@ fn rehash() {
 const INTERN_SIZE: u64 = if cfg!(miri) { 35 } else { 26334 };
 const HIT_RATE: u64 = 84;
 
-fn assert_equal(a: &mut SyncTable<(u64, u64)>, b: &HashMap<u64, u64>) {
+fn assert_equal(a: &mut SyncTable<u64, u64>, b: &HashMap<u64, u64>) {
     let mut ca: Vec<_> = b.iter().map(|v| (*v.0, *v.1)).collect();
     ca.sort();
     let mut cb: Vec<_> = a.write().read().iter().map(|v| (v.0, v.1)).collect();
@@ -210,7 +210,7 @@ fn assert_equal(a: &mut SyncTable<(u64, u64)>, b: &HashMap<u64, u64>) {
     assert_eq!(ca, cb);
 }
 
-fn test_interning(intern: impl Fn(&SyncTable<(u64, u64)>, u64, u64, Pin<'_>) -> bool) {
+fn test_interning(intern: impl Fn(&SyncTable<u64, u64>, u64, u64, Pin<'_>) -> bool) {
     let mut control = HashMap::new();
     let mut test = SyncTable::new();
 
@@ -242,7 +242,7 @@ fn test_interning(intern: impl Fn(&SyncTable<(u64, u64)>, u64, u64, Pin<'_>) -> 
 
 #[test]
 fn intern_potential() {
-    fn intern(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
+    fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_any(&k);
         let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
             Ok(_) => return true,
@@ -267,7 +267,7 @@ fn intern_potential() {
 
 #[test]
 fn intern_get_insert() {
-    fn intern(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
+    fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_any(&k);
         match table.read(pin).get(hash, |v| v.0 == k) {
             Some(_) => return true,
@@ -289,7 +289,7 @@ fn intern_get_insert() {
 
 #[test]
 fn intern_potential_try() {
-    fn intern(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> bool {
+    fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_any(&k);
         let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
             Ok(_) => return true,

@@ -23,8 +23,6 @@ mod raw;
 mod scopeguard;
 mod util;
 
-pub mod hash_map;
-
 pub mod sync_push_vec;
 pub mod sync_table;
 

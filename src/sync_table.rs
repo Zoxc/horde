@@ -780,6 +780,11 @@ impl<K, V, S> SyncTable<K, V, S> {
 }
 
 impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
+    #[inline]
+    fn unwrap_hash<Q: Hash + ?Sized>(&self, key: &Q, hash: Option<u64>) -> u64 {
+        hash.unwrap_or_else(|| self.hash_any(key))
+    }
+
     /// Hashes any hashable value with the hasher the table was constructed with.
     #[inline]
     pub fn hash_any<T: Hash + ?Sized>(&self, val: &T) -> u64 {
@@ -787,15 +792,21 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
     }
 }
 
-impl<'a, K, V, S> Read<'a, K, V, S> {
+impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
     /// Gets a reference to an element in the table or a potential location
     /// where that element could be.
     #[inline]
-    pub fn get_potential<Q>(self, key: &Q, hash: u64) -> Result<(&'a K, &'a V), PotentialSlot<'a>>
+    pub fn get_potential<Q>(
+        self,
+        key: &Q,
+        hash: Option<u64>,
+    ) -> Result<(&'a K, &'a V), PotentialSlot<'a>>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Eq,
+        Q: ?Sized + Eq + Hash,
     {
+        let hash = self.table.unwrap_hash(key, hash);
+
         unsafe {
             match self.table.current().find_potential(hash, eq(key)) {
                 Ok((_, bucket)) => Ok(bucket.as_pair_ref()),
@@ -806,11 +817,13 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 
     /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get<Q>(self, key: &Q, hash: u64) -> Option<(&'a K, &'a V)>
+    pub fn get<Q>(self, key: &Q, hash: Option<u64>) -> Option<(&'a K, &'a V)>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Eq,
+        Q: ?Sized + Eq + Hash,
     {
+        let hash = self.table.unwrap_hash(key, hash);
+
         unsafe {
             self.table
                 .current()
@@ -818,7 +831,9 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
                 .map(|(_, bucket)| bucket.as_pair_ref())
         }
     }
+}
 
+impl<'a, K, V, S> Read<'a, K, V, S> {
     /// Returns the number of elements the map can hold without reallocating.
     #[inline]
     pub fn capacity(self) -> usize {
@@ -945,7 +960,9 @@ impl<'a, K: Hash + Eq + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a,
     /// Inserts a element into the table.
     /// Returns `false` if it already exists and doesn't update the value.
     #[inline]
-    pub fn insert(&mut self, key: K, value: V, hash: u64) -> bool {
+    pub fn insert(&mut self, key: K, value: V, hash: Option<u64>) -> bool {
+        let hash = self.table.unwrap_hash(&key, hash);
+
         let mut table = self.table.current();
 
         unsafe {
@@ -956,7 +973,7 @@ impl<'a, K: Hash + Eq + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a,
             match table.find_potential(hash, eq(&key)) {
                 Ok(_) => false,
                 Err(slot) => {
-                    slot.insert_new_unchecked(self, key, value, hash);
+                    slot.insert_new_unchecked(self, key, value, Some(hash));
                     true
                 }
             }
@@ -969,7 +986,9 @@ impl<'a, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new(&mut self, key: K, value: V, hash: u64) -> (&'a K, &'a V) {
+    pub fn insert_new(&mut self, key: K, value: V, hash: Option<u64>) -> (&'a K, &'a V) {
+        let hash = self.table.unwrap_hash(&key, hash);
+
         let mut table = self.table.current();
 
         unsafe {
@@ -1092,8 +1111,7 @@ impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> Syn
         {
             let mut write = map.write();
             iter.for_each(|(k, v)| {
-                let hash = make_insert_hash(write.hasher(), &k);
-                write.insert(k, v, hash);
+                write.insert(k, v, None);
             });
         }
         map
@@ -1126,15 +1144,15 @@ impl<'a> PotentialSlot<'a> {
 
     /// Gets a reference to an element in the table.
     #[inline]
-    pub fn get<'b, Q, K, V, S>(
+    pub fn get<'b, Q, K, V, S: BuildHasher>(
         self,
         table: Read<'b, K, V, S>,
         key: &Q,
-        hash: u64,
+        hash: Option<u64>,
     ) -> Option<(&'b K, &'b V)>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Eq,
+        Q: ?Sized + Eq + Hash,
     {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
@@ -1149,15 +1167,15 @@ impl<'a> PotentialSlot<'a> {
     /// This can be useful if there could have been insertions since the slot was derived
     /// and you want to use `try_insert_new` or `insert_new_unchecked`.
     #[inline]
-    pub fn refresh<Q, K, V, S>(
+    pub fn refresh<Q, K, V, S: BuildHasher>(
         self,
         table: Read<'a, K, V, S>,
         key: &Q,
-        hash: u64,
+        hash: Option<u64>,
     ) -> Result<(&'a K, &'a V), PotentialSlot<'a>>
     where
         K: Borrow<Q>,
-        Q: ?Sized + Eq,
+        Q: ?Sized + Eq + Hash,
     {
         unsafe {
             if likely(self.is_empty(table.table.current())) {
@@ -1194,8 +1212,10 @@ impl<'a> PotentialSlot<'a> {
         table: &mut Write<'b, K, V, S>,
         key: K,
         value: V,
-        hash: u64,
+        hash: Option<u64>,
     ) -> (&'b K, &'b V) {
+        let hash = table.table.unwrap_hash(&key, hash);
+
         unsafe {
             let table = table.table.current();
 
@@ -1207,7 +1227,7 @@ impl<'a> PotentialSlot<'a> {
             }
         }
 
-        cold_path(|| table.insert_new(key, value, hash))
+        cold_path(|| table.insert_new(key, value, Some(hash)))
     }
 
     /// Inserts a new element into the table, and returns a reference to it.
@@ -1216,13 +1236,15 @@ impl<'a> PotentialSlot<'a> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn try_insert_new<'b, K, V, S>(
+    pub fn try_insert_new<'b, K: Hash, V, S: BuildHasher>(
         self,
         table: &mut Write<'b, K, V, S>,
         key: K,
         value: V,
-        hash: u64,
+        hash: Option<u64>,
     ) -> Option<(&'b K, &'b V)> {
+        let hash = table.table.unwrap_hash(&key, hash);
+
         unsafe {
             let table = table.table.current();
 
@@ -1248,13 +1270,15 @@ impl<'a> PotentialSlot<'a> {
     /// - There must not have been any insertions or `replace` calls to the table since `self`
     ///   was derived.
     #[inline]
-    pub unsafe fn insert_new_unchecked<'b, K, V, S>(
+    pub unsafe fn insert_new_unchecked<'b, K: Hash, V, S: BuildHasher>(
         self,
         table: &mut Write<'b, K, V, S>,
         key: K,
         value: V,
-        hash: u64,
+        hash: Option<u64>,
     ) -> (&'b K, &'b V) {
+        let hash = table.table.unwrap_hash(&key, hash);
+
         let table = table.table.current();
 
         debug_assert!(self.is_empty(table));
