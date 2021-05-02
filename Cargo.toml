@@ -1,6 +1,6 @@
 [package]
 name = "horde"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2018"
 authors = ["Zoxc <zoxc32@gmail.com>"]
 description = "a horde of threads"

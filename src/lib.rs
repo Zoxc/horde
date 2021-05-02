@@ -13,7 +13,7 @@
     option_result_unwrap_unchecked,
     thread_local
 )]
-#![allow(clippy::len_without_is_empty)]
+#![allow(clippy::len_without_is_empty, clippy::type_complexity)]
 
 #[macro_use]
 mod macros;

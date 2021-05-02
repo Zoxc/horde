@@ -13,9 +13,7 @@ use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
-    cmp,
-    convert::TryInto,
-    fmt,
+    cmp, fmt,
     hash::BuildHasher,
     intrinsics::{likely, unlikely},
     iter::{FromIterator, FusedIterator},
@@ -1560,7 +1558,6 @@ impl<T> FusedIterator for RawIterRange<T> {}
 /// `shards` must be a power of 2.
 #[inline]
 pub fn shard_index_by_hash(hash: u64, shards: usize) -> usize {
-    let shards: usize = shards.try_into().unwrap();
     assert!(shards.is_power_of_two());
     let shard_bits = shards - 1;
 

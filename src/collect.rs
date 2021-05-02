@@ -18,7 +18,7 @@ mod code;
 // TODO: Use a reference count of pins and a PinRef ZST with a destructor that drops the reference
 // so a closure with the `pin` function isn't required.
 
-static DEFERRED: AtomicUsize = AtomicUsize::new(0);
+static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Represents a proof that no deferred methods will run for the lifetime `'a`.
 /// It can be used to access data structures in a lock-free manner.
@@ -47,20 +47,20 @@ where
 
     COLLECTOR.lock().defer(f);
 
-    DEFERRED.fetch_add(1, Ordering::Release);
+    EVENTS.fetch_add(1, Ordering::Release);
 }
 
 #[thread_local]
 static DATA: Data = Data {
     pinned: Cell::new(false),
     registered: Cell::new(false),
-    seen_deferred: Cell::new(0),
+    seen_events: Cell::new(0),
 };
 
 struct Data {
     pinned: Cell<bool>,
     registered: Cell<bool>,
-    seen_deferred: Cell<usize>,
+    seen_events: Cell<usize>,
 }
 
 #[inline(never)]
@@ -182,22 +182,24 @@ pub fn collect() {
     if cfg!(debug_assertions) {
         data.assert_unpinned();
     }
-    let new = DEFERRED.load(Ordering::Acquire);
-    if unlikely(new != data.seen_deferred.get()) {
-        data.seen_deferred.set(new);
+    let new = EVENTS.load(Ordering::Acquire);
+    if unlikely(new != data.seen_events.get()) {
+        data.seen_events.set(new);
         cold_path(|| {
             data.assert_unpinned();
 
-            // Check if we could block any deferred methods
-            if !data.registered.get() {
-                return;
-            }
+            let callbacks = {
+                let mut collector = COLLECTOR.lock();
 
-            let callbacks = COLLECTOR.lock().quiet();
+                // Check if we could block any deferred methods
+                if data.registered.get() {
+                    collector.quiet()
+                } else {
+                    collector.collect_unregistered()
+                }
+            };
 
-            if let Some(callbacks) = callbacks {
-                callbacks.into_iter().for_each(|callback| callback())
-            }
+            callbacks.into_iter().for_each(|callback| callback());
         });
     }
 }
@@ -245,14 +247,26 @@ impl Collector {
                 // Don't collect garbage here, but let the other threads know that there's
                 // garbage to be collected.
                 self.pending = true;
-                DEFERRED.fetch_add(1, Ordering::Release);
+                EVENTS.fetch_add(1, Ordering::Release);
             }
         }
 
         self.threads.remove(&thread);
     }
 
-    fn quiet(&mut self) -> Option<Callbacks> {
+    fn collect_unregistered(&mut self) -> Callbacks {
+        debug_assert!(!self.threads.contains_key(&thread::current().id()));
+
+        if self.threads.is_empty() {
+            let mut callbacks = mem::take(&mut self.previous_deferred);
+            callbacks.extend(mem::take(&mut self.current_deferred));
+            callbacks
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn quiet(&mut self) -> Callbacks {
         let quiet = self.threads.get_mut(&thread::current().id()).unwrap();
         if !*quiet || self.pending {
             if !*quiet {
@@ -269,15 +283,23 @@ impl Collector {
                     *value = false;
                 });
 
-                let callbacks = mem::take(&mut self.previous_deferred);
+                let mut callbacks = mem::take(&mut self.previous_deferred);
                 self.previous_deferred = mem::take(&mut self.current_deferred);
 
-                Some(callbacks)
+                if !self.previous_deferred.is_empty() {
+                    // Mark ourselves as quiet again
+                    callbacks.extend(self.quiet());
+
+                    // Signal other threads to check in
+                    EVENTS.fetch_add(1, Ordering::Release);
+                }
+
+                callbacks
             } else {
-                None
+                Vec::new()
             }
         } else {
-            None
+            Vec::new()
         }
     }
 
