@@ -645,8 +645,8 @@ unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
     }
 }
 
-unsafe impl<K: Send, V: Send, S> Send for SyncTable<K, V, S> {}
-unsafe impl<K: Sync, V: Sync, S> Sync for SyncTable<K, V, S> {}
+unsafe impl<K: Send, V: Send, S: Send> Send for SyncTable<K, V, S> {}
+unsafe impl<K: Sync, V: Sync, S: Sync> Sync for SyncTable<K, V, S> {}
 
 impl<K, V, S: Default> Default for SyncTable<K, V, S> {
     #[inline]
@@ -844,7 +844,11 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
 impl<'a, K, V, S> Read<'a, K, V, S> {
     /// Gets a reference to an element in the table with a custom equality function.
     #[inline]
-    pub fn get_eq(self, hash: u64, mut eq: impl FnMut(&K, &V) -> bool) -> Option<(&'a K, &'a V)> {
+    pub fn get_with_eq(
+        self,
+        hash: u64,
+        mut eq: impl FnMut(&K, &V) -> bool,
+    ) -> Option<(&'a K, &'a V)> {
         unsafe {
             self.table
                 .current()
@@ -937,7 +941,7 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
     }
 }
 
-impl<K, V, S> Write<'_, K, V, S> {
+impl<'a, K, V, S> Write<'a, K, V, S> {
     /// Creates a [Read] handle which gives access to read operations.
     #[inline]
     pub fn read(&self) -> Read<'_, K, V, S> {
@@ -946,7 +950,7 @@ impl<K, V, S> Write<'_, K, V, S> {
 
     /// Returns a reference to the table's `BuildHasher`.
     #[inline]
-    pub fn hasher(&self) -> &S {
+    pub fn hasher(&self) -> &'a S {
         &self.table.hash_builder
     }
 }
