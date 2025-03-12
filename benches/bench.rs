@@ -9,10 +9,10 @@ extern crate test;
 use std::hash::Hasher;
 
 use horde::{
-    collect::{pin, Pin},
+    collect::{Pin, pin},
     sync_table::SyncTable,
 };
-use test::{black_box, Bencher};
+use test::{Bencher, black_box};
 
 fn intern_map() -> SyncTable<u64, u64> {
     let mut m = SyncTable::new();

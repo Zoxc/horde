@@ -1,12 +1,12 @@
 #![cfg(test)]
 
 use super::SyncTable;
+use crate::collect::Pin;
 use crate::collect::pin;
 use crate::collect::release;
-use crate::collect::Pin;
 use std::collections::hash_map::RandomState;
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
 };
 

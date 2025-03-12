@@ -3,7 +3,7 @@
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{self, pin, Pin},
+    collect::{self, Pin, pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{cold_path, make_insert_hash},
@@ -11,7 +11,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
+    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
@@ -75,38 +75,46 @@ impl<T> Bucket<T> {
     }
     #[inline]
     unsafe fn next_n(&self, offset: usize) -> Self {
-        let ptr = if mem::size_of::<T>() == 0 {
-            (self.ptr.as_ptr() as usize + offset) as *mut T
-        } else {
-            self.ptr.as_ptr().sub(offset)
-        };
-        Self {
-            ptr: NonNull::new_unchecked(ptr),
+        unsafe {
+            let ptr = if mem::size_of::<T>() == 0 {
+                (self.ptr.as_ptr() as usize + offset) as *mut T
+            } else {
+                self.ptr.as_ptr().sub(offset)
+            };
+            Self {
+                ptr: NonNull::new_unchecked(ptr),
+            }
         }
     }
     #[inline]
     unsafe fn drop(&self) {
-        self.as_ptr().drop_in_place();
+        unsafe {
+            self.as_ptr().drop_in_place();
+        }
     }
     #[inline]
     unsafe fn write(&self, val: T) {
-        self.as_ptr().write(val);
+        unsafe {
+            self.as_ptr().write(val);
+        }
     }
     #[inline]
     unsafe fn as_ref<'a>(&self) -> &'a T {
-        &*self.as_ptr()
+        unsafe { &*self.as_ptr() }
     }
     #[inline]
     unsafe fn as_mut<'a>(&self) -> &'a mut T {
-        &mut *self.as_ptr()
+        unsafe { &mut *self.as_ptr() }
     }
 }
 
 impl<K, V> Bucket<(K, V)> {
     #[inline]
     pub unsafe fn as_pair_ref<'a>(&self) -> (&'a K, &'a V) {
-        let pair = &*self.as_ptr();
-        (&pair.0, &pair.1)
+        unsafe {
+            let pair = &*self.as_ptr();
+            (&pair.0, &pair.1)
+        }
     }
 }
 
@@ -207,69 +215,77 @@ impl TableInfo {
     /// Returns a pointer to a control byte.
     #[inline]
     unsafe fn ctrl(&self, index: usize) -> *mut u8 {
-        debug_assert!(index < self.num_ctrl_bytes());
+        unsafe {
+            debug_assert!(index < self.num_ctrl_bytes());
 
-        let info = Layout::new::<TableInfo>();
-        let control = Layout::new::<Group>();
-        let offset = info.extend(control).unwrap().1;
+            let info = Layout::new::<TableInfo>();
+            let control = Layout::new::<Group>();
+            let offset = info.extend(control).unwrap().1;
 
-        let ctrl = (self as *const TableInfo as *mut u8).add(offset);
+            let ctrl = (self as *const TableInfo as *mut u8).add(offset);
 
-        ctrl.add(index)
+            ctrl.add(index)
+        }
     }
 
     /// Sets a control byte, and possibly also the replicated control byte at
     /// the end of the array.
     #[inline]
     unsafe fn set_ctrl(&self, index: usize, ctrl: u8) {
-        // Replicate the first Group::WIDTH control bytes at the end of
-        // the array without using a branch:
-        // - If index >= Group::WIDTH then index == index2.
-        // - Otherwise index2 == self.bucket_mask + 1 + index.
-        //
-        // The very last replicated control byte is never actually read because
-        // we mask the initial index for unaligned loads, but we write it
-        // anyways because it makes the set_ctrl implementation simpler.
-        //
-        // If there are fewer buckets than Group::WIDTH then this code will
-        // replicate the buckets at the end of the trailing group. For example
-        // with 2 buckets and a group size of 4, the control bytes will look
-        // like this:
-        //
-        //     Real    |             Replicated
-        // ---------------------------------------------
-        // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
-        // ---------------------------------------------
-        let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
+        unsafe {
+            // Replicate the first Group::WIDTH control bytes at the end of
+            // the array without using a branch:
+            // - If index >= Group::WIDTH then index == index2.
+            // - Otherwise index2 == self.bucket_mask + 1 + index.
+            //
+            // The very last replicated control byte is never actually read because
+            // we mask the initial index for unaligned loads, but we write it
+            // anyways because it makes the set_ctrl implementation simpler.
+            //
+            // If there are fewer buckets than Group::WIDTH then this code will
+            // replicate the buckets at the end of the trailing group. For example
+            // with 2 buckets and a group size of 4, the control bytes will look
+            // like this:
+            //
+            //     Real    |             Replicated
+            // ---------------------------------------------
+            // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
+            // ---------------------------------------------
+            let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
 
-        *self.ctrl(index) = ctrl;
-        *self.ctrl(index2) = ctrl;
+            *self.ctrl(index) = ctrl;
+            *self.ctrl(index2) = ctrl;
+        }
     }
 
     /// Sets a control byte, and possibly also the replicated control byte at
     /// the end of the array. Same as set_ctrl, but uses release stores.
     #[inline]
     unsafe fn set_ctrl_release(&self, index: usize, ctrl: u8) {
-        let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
+        unsafe {
+            let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
 
-        (*(self.ctrl(index) as *mut AtomicU8)).store(ctrl, Ordering::Release);
-        (*(self.ctrl(index2) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+            (*(self.ctrl(index) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+            (*(self.ctrl(index2) as *mut AtomicU8)).store(ctrl, Ordering::Release);
+        }
     }
 
     /// Sets a control byte to the hash, and possibly also the replicated control byte at
     /// the end of the array.
     #[inline]
     unsafe fn set_ctrl_h2(&self, index: usize, hash: u64) {
-        self.set_ctrl(index, h2(hash))
+        unsafe { self.set_ctrl(index, h2(hash)) }
     }
 
     #[inline]
     unsafe fn record_item_insert_at(&self, index: usize, hash: u64) {
-        self.growth_left.store(
-            self.growth_left.load(Ordering::Relaxed) - 1,
-            Ordering::Release,
-        );
-        self.set_ctrl_release(index, h2(hash));
+        unsafe {
+            self.growth_left.store(
+                self.growth_left.load(Ordering::Relaxed) - 1,
+                Ordering::Release,
+            );
+            self.set_ctrl_release(index, h2(hash));
+        }
     }
 
     /// Searches for an empty or deleted bucket which is suitable for inserting
@@ -278,10 +294,12 @@ impl TableInfo {
     /// There must be at least 1 empty bucket in the table.
     #[inline]
     unsafe fn prepare_insert_slot(&self, hash: u64) -> (usize, u8) {
-        let index = self.find_insert_slot(hash);
-        let old_ctrl = *self.ctrl(index);
-        self.set_ctrl_h2(index, hash);
-        (index, old_ctrl)
+        unsafe {
+            let index = self.find_insert_slot(hash);
+            let old_ctrl = *self.ctrl(index);
+            self.set_ctrl_h2(index, hash);
+            (index, old_ctrl)
+        }
     }
 
     /// Searches for an empty or deleted bucket which is suitable for inserting
@@ -290,15 +308,17 @@ impl TableInfo {
     /// There must be at least 1 empty bucket in the table.
     #[inline]
     unsafe fn find_insert_slot(&self, hash: u64) -> usize {
-        let mut probe_seq = self.probe_seq(hash);
-        loop {
-            let group = Group::load(self.ctrl(probe_seq.pos));
-            if let Some(bit) = group.match_empty().lowest_set_bit() {
-                let result = (probe_seq.pos + bit) & self.bucket_mask;
+        unsafe {
+            let mut probe_seq = self.probe_seq(hash);
+            loop {
+                let group = Group::load(self.ctrl(probe_seq.pos));
+                if let Some(bit) = group.match_empty().lowest_set_bit() {
+                    let result = (probe_seq.pos + bit) & self.bucket_mask;
 
-                return result;
+                    return result;
+                }
+                probe_seq.move_next(self.bucket_mask);
             }
-            probe_seq.move_next(self.bucket_mask);
         }
     }
 
@@ -403,19 +423,21 @@ impl<T> TableRef<T> {
 
     #[inline]
     unsafe fn free(self) {
-        if self.info().bucket_mask > 0 {
-            if mem::needs_drop::<T>() {
-                for item in self.iter() {
-                    item.drop();
+        unsafe {
+            if self.info().bucket_mask > 0 {
+                if mem::needs_drop::<T>() {
+                    for item in self.iter() {
+                        item.drop();
+                    }
                 }
-            }
 
-            // TODO: Document why we don't need to account for padding when adjusting
-            // the pointer. Sizes allowed can't result in padding?
-            Global.deallocate(
-                NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
-                Self::layout(self.info().buckets()).unwrap_unchecked().0,
-            )
+                // TODO: Document why we don't need to account for padding when adjusting
+                // the pointer. Sizes allowed can't result in padding?
+                Global.deallocate(
+                    NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
+                    Self::layout(self.info().buckets()).unwrap_unchecked().0,
+                )
+            }
         }
     }
 
@@ -449,51 +471,53 @@ impl<T> TableRef<T> {
         hash_builder: &S,
         hasher: H,
     ) -> TableRef<T> {
-        let mut new_table = TableRef::allocate(buckets);
+        unsafe {
+            let mut new_table = TableRef::allocate(buckets);
 
-        let mut guard = guard(Some(new_table), |new_table| {
-            new_table.map(|new_table| new_table.free());
-        });
+            let mut guard = guard(Some(new_table), |new_table| {
+                new_table.map(|new_table| new_table.free());
+            });
 
-        let mut growth_left = *new_table.info_mut().growth_left.get_mut();
+            let mut growth_left = *new_table.info_mut().growth_left.get_mut();
 
-        // Copy all elements to the new table.
-        for item in iter {
-            if CHECK_LEN && growth_left == 0 {
-                break;
+            // Copy all elements to the new table.
+            for item in iter {
+                if CHECK_LEN && growth_left == 0 {
+                    break;
+                }
+
+                // This may panic.
+                let hash = hasher(hash_builder, &item);
+
+                // We can use a simpler version of insert() here since:
+                // - we know there is enough space in the table.
+                // - all elements are unique.
+                let (index, _) = new_table.info().prepare_insert_slot(hash);
+
+                new_table.bucket(index).write(item);
+
+                growth_left -= 1;
             }
 
-            // This may panic.
-            let hash = hasher(hash_builder, &item);
+            *new_table.info_mut().growth_left.get_mut() = growth_left;
 
-            // We can use a simpler version of insert() here since:
-            // - we know there is enough space in the table.
-            // - all elements are unique.
-            let (index, _) = new_table.info().prepare_insert_slot(hash);
+            *guard = None;
 
-            new_table.bucket(index).write(item);
-
-            growth_left -= 1;
+            new_table
         }
-
-        *new_table.info_mut().growth_left.get_mut() = growth_left;
-
-        *guard = None;
-
-        new_table
     }
 
     unsafe fn info(&self) -> &TableInfo {
-        self.data.as_ref()
+        unsafe { self.data.as_ref() }
     }
 
     unsafe fn info_mut(&mut self) -> &mut TableInfo {
-        self.data.as_mut()
+        unsafe { self.data.as_mut() }
     }
 
     #[inline]
     unsafe fn bucket_before_first(&self) -> *mut T {
-        self.bucket_past_last().sub(self.info().buckets())
+        unsafe { self.bucket_past_last().sub(self.info().buckets()) }
     }
 
     #[inline]
@@ -504,10 +528,12 @@ impl<T> TableRef<T> {
     /// Returns a pointer to an element in the table.
     #[inline]
     unsafe fn bucket(&self, index: usize) -> Bucket<T> {
-        debug_assert!(index < self.info().buckets());
+        unsafe {
+            debug_assert!(index < self.info().buckets());
 
-        Bucket {
-            ptr: NonNull::new_unchecked(self.bucket_past_last().sub(index)),
+            Bucket {
+                ptr: NonNull::new_unchecked(self.bucket_past_last().sub(index)),
+            }
         }
     }
 
@@ -517,10 +543,12 @@ impl<T> TableRef<T> {
     /// struct, we have to make the `iter` method unsafe.
     #[inline]
     unsafe fn iter(&self) -> RawIterRange<T> {
-        let data = Bucket {
-            ptr: NonNull::new_unchecked(self.bucket_past_last()),
-        };
-        RawIterRange::new(self.info().ctrl(0), data, self.info().buckets())
+        unsafe {
+            let data = Bucket {
+                ptr: NonNull::new_unchecked(self.bucket_past_last()),
+            };
+            RawIterRange::new(self.info().ctrl(0), data, self.info().buckets())
+        }
     }
 
     /// Searches for an element in the table.
@@ -531,46 +559,50 @@ impl<T> TableRef<T> {
         mut eq: impl FnMut(&T) -> bool,
         mut stop: impl FnMut(&Group, &ProbeSeq) -> Option<R>,
     ) -> Result<(usize, Bucket<T>), R> {
-        let h2_hash = h2(hash);
-        let mut probe_seq = self.info().probe_seq(hash);
-        let mut group = Group::load(self.info().ctrl(probe_seq.pos));
-        let mut bitmask = group.match_byte(h2_hash).into_iter();
+        unsafe {
+            let h2_hash = h2(hash);
+            let mut probe_seq = self.info().probe_seq(hash);
+            let mut group = Group::load(self.info().ctrl(probe_seq.pos));
+            let mut bitmask = group.match_byte(h2_hash).into_iter();
 
-        loop {
-            if let Some(bit) = bitmask.next() {
-                let index = (probe_seq.pos + bit) & self.info().bucket_mask;
+            loop {
+                if let Some(bit) = bitmask.next() {
+                    let index = (probe_seq.pos + bit) & self.info().bucket_mask;
 
-                let bucket = self.bucket(index);
-                let elm = self.bucket(index).as_ref();
-                if likely(eq(elm)) {
-                    return Ok((index, bucket));
+                    let bucket = self.bucket(index);
+                    let elm = self.bucket(index).as_ref();
+                    if likely(eq(elm)) {
+                        return Ok((index, bucket));
+                    }
+
+                    // Look at the next bit
+                    continue;
                 }
 
-                // Look at the next bit
-                continue;
-            }
+                if let Some(stop) = stop(&group, &probe_seq) {
+                    return Err(stop);
+                }
 
-            if let Some(stop) = stop(&group, &probe_seq) {
-                return Err(stop);
+                probe_seq.move_next(self.info().bucket_mask);
+                group = Group::load(self.info().ctrl(probe_seq.pos));
+                bitmask = group.match_byte(h2_hash).into_iter();
             }
-
-            probe_seq.move_next(self.info().bucket_mask);
-            group = Group::load(self.info().ctrl(probe_seq.pos));
-            bitmask = group.match_byte(h2_hash).into_iter();
         }
     }
 
     /// Searches for an element in the table.
     #[inline]
     unsafe fn find(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<(usize, Bucket<T>)> {
-        self.search(hash, eq, |group, _| {
-            if likely(group.match_empty().any_bit_set()) {
-                Some(())
-            } else {
-                None
-            }
-        })
-        .ok()
+        unsafe {
+            self.search(hash, eq, |group, _| {
+                if likely(group.match_empty().any_bit_set()) {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .ok()
+        }
     }
 
     /// Searches for an element in the table.
@@ -580,18 +612,20 @@ impl<T> TableRef<T> {
         hash: u64,
         eq: impl FnMut(&T) -> bool,
     ) -> Result<(usize, Bucket<T>), PotentialSlot<'static>> {
-        self.search(hash, eq, |group, probe_seq| {
-            let bit = group.match_empty().lowest_set_bit();
-            if likely(bit.is_some()) {
-                let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
-                Some(PotentialSlot {
-                    table_info: &*self.data.as_ptr(),
-                    index,
-                })
-            } else {
-                None
-            }
-        })
+        unsafe {
+            self.search(hash, eq, |group, probe_seq| {
+                let bit = group.match_empty().lowest_set_bit();
+                if likely(bit.is_some()) {
+                    let index = (probe_seq.pos + bit.unwrap_unchecked()) & self.info().bucket_mask;
+                    Some(PotentialSlot {
+                        table_info: &*self.data.as_ptr(),
+                        index,
+                    })
+                } else {
+                    None
+                }
+            })
+        }
     }
 }
 
@@ -604,14 +638,16 @@ impl<T: Clone> TableRef<T> {
         buckets: usize,
         hasher: impl Fn(&S, &T) -> u64,
     ) -> TableRef<T> {
-        debug_assert!(buckets >= self.info().buckets());
+        unsafe {
+            debug_assert!(buckets >= self.info().buckets());
 
-        TableRef::from_iter::<_, _, _, false>(
-            self.iter().map(|bucket| bucket.as_ref().clone()),
-            buckets,
-            hash_builder,
-            hasher,
-        )
+            TableRef::from_iter::<_, _, _, false>(
+                self.iter().map(|bucket| bucket.as_ref().clone()),
+                buckets,
+                hash_builder,
+                hasher,
+            )
+        }
     }
 }
 
@@ -625,10 +661,12 @@ unsafe impl<T: Send> Send for DestroyTable<T> {}
 
 impl<T> DestroyTable<T> {
     unsafe fn run(&self) {
-        let mut status = self.lock.lock();
-        if !*status {
-            *status = true;
-            self.table.free();
+        unsafe {
+            let mut status = self.lock.lock();
+            if !*status {
+                *status = true;
+                self.table.free();
+            }
         }
     }
 }
@@ -1158,13 +1196,16 @@ pub struct PotentialSlot<'a> {
 impl<'a> PotentialSlot<'a> {
     #[inline]
     unsafe fn is_empty<T>(self, table: TableRef<T>) -> bool {
-        let table_info = table.info() as *const TableInfo;
-        let index = self.index;
+        unsafe {
+            let table_info = table.info() as *const TableInfo;
+            let index = self.index;
 
-        // Check that we are still looking at the same table,
-        // otherwise our index could be out of date due to expansion
-        // or a `replace` call.
-        table_info == (self.table_info as *const TableInfo) && *self.table_info.ctrl(index) == EMPTY
+            // Check that we are still looking at the same table,
+            // otherwise our index could be out of date due to expansion
+            // or a `replace` call.
+            table_info == (self.table_info as *const TableInfo)
+                && *self.table_info.ctrl(index) == EMPTY
+        }
     }
 
     /// Gets a reference to an element in the table.
@@ -1218,14 +1259,16 @@ impl<'a> PotentialSlot<'a> {
         value: (K, V),
         hash: u64,
     ) -> (&'b K, &'b V) {
-        let index = self.index;
-        let bucket = table.bucket(index);
-        bucket.write(value);
+        unsafe {
+            let index = self.index;
+            let bucket = table.bucket(index);
+            bucket.write(value);
 
-        table.info().record_item_insert_at(index, hash);
+            table.info().record_item_insert_at(index, hash);
 
-        let pair = bucket.as_ref();
-        (&pair.0, &pair.1)
+            let pair = bucket.as_ref();
+            (&pair.0, &pair.1)
+        }
     }
 
     /// Inserts a new element into the table, and returns a reference to it.
@@ -1302,14 +1345,16 @@ impl<'a> PotentialSlot<'a> {
         value: V,
         hash: Option<u64>,
     ) -> (&'b K, &'b V) {
-        let hash = table.table.unwrap_hash(&key, hash);
+        unsafe {
+            let hash = table.table.unwrap_hash(&key, hash);
 
-        let table = table.table.current();
+            let table = table.table.current();
 
-        debug_assert!(self.is_empty(table));
-        debug_assert!(table.info().growth_left.load(Ordering::Relaxed) > 0);
+            debug_assert!(self.is_empty(table));
+            debug_assert!(table.info().growth_left.load(Ordering::Relaxed) > 0);
 
-        self.insert(table, (key, value), hash)
+            self.insert(table, (key, value), hash)
+        }
     }
 }
 
@@ -1384,11 +1429,7 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
-        if cap < 4 {
-            4
-        } else {
-            8
-        }
+        if cap < 4 { 4 } else { 8 }
     } else {
         // Otherwise require 1/8 buckets to be empty (87.5% load)
         //
@@ -1492,19 +1533,21 @@ impl<T> RawIterRange<T> {
     /// The control byte address must be aligned to the group size.
     #[inline]
     unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
-        debug_assert_ne!(len, 0);
-        debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
-        let end = ctrl.add(len);
+        unsafe {
+            debug_assert_ne!(len, 0);
+            debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
+            let end = ctrl.add(len);
 
-        // Load the first group and advance ctrl to point to the next group
-        let current_group = Group::load_aligned(ctrl).match_full();
-        let next_ctrl = ctrl.add(Group::WIDTH);
+            // Load the first group and advance ctrl to point to the next group
+            let current_group = Group::load_aligned(ctrl).match_full();
+            let next_ctrl = ctrl.add(Group::WIDTH);
 
-        Self {
-            current_group,
-            data,
-            next_ctrl,
-            end,
+            Self {
+                current_group,
+                data,
+                next_ctrl,
+                end,
+            }
         }
     }
 }

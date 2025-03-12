@@ -9,8 +9,8 @@ use std::{
     intrinsics::unlikely,
     marker::PhantomData,
     mem,
-    sync::atomic::{AtomicUsize, Ordering},
     sync::LazyLock,
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{self, ThreadId},
 };
 
@@ -43,12 +43,14 @@ where
     F: FnOnce(),
     F: Send,
 {
-    let f: Box<dyn FnOnce() + Send> = Box::new(f);
-    let f: Box<dyn FnOnce() + Send + 'static> = mem::transmute(f);
+    unsafe {
+        let f: Box<dyn FnOnce() + Send> = Box::new(f);
+        let f: Box<dyn FnOnce() + Send + 'static> = mem::transmute(f);
 
-    COLLECTOR.lock().defer(f);
+        COLLECTOR.lock().defer(f);
 
-    EVENTS.fetch_add(1, Ordering::Release);
+        EVENTS.fetch_add(1, Ordering::Release);
+    }
 }
 
 #[thread_local]

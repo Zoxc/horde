@@ -1,4 +1,4 @@
-use super::imp::{BitMaskWord, BITMASK_MASK, BITMASK_STRIDE};
+use super::imp::{BITMASK_MASK, BITMASK_STRIDE, BitMaskWord};
 use core::intrinsics;
 
 /// A bit mask which contains the result of a `Match` operation on a `Group` and
@@ -50,7 +50,7 @@ impl BitMask {
     /// bitmask must not be empty.
     #[inline]
     pub unsafe fn lowest_set_bit_nonzero(self) -> usize {
-        intrinsics::cttz_nonzero(self.0) as usize / BITMASK_STRIDE
+        unsafe { intrinsics::cttz_nonzero(self.0) as usize / BITMASK_STRIDE }
     }
 }
 

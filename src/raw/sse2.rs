@@ -1,5 +1,5 @@
-use super::bitmask::BitMask;
 use super::EMPTY;
+use super::bitmask::BitMask;
 use core::arch::asm;
 use core::mem;
 
@@ -47,13 +47,15 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
-        let mut result = x86::_mm_loadu_si128(ptr.cast());
+        unsafe {
+            let mut result = x86::_mm_loadu_si128(ptr.cast());
 
-        // Hide the `result` value since we need the backend to assume it could be the hardware
-        // instruction `movdqu` which has Ordering::Acquire semantics.
-        asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
+            // Hide the `result` value since we need the backend to assume it could be the hardware
+            // instruction `movdqu` which has Ordering::Acquire semantics.
+            asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
 
-        Group(result)
+            Group(result)
+        }
     }
 
     /// Loads a group of bytes starting at the given address, which must be
@@ -61,18 +63,20 @@ impl Group {
     #[inline]
     #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
-        // TODO: Use a volatile read here instead for better code generation.
-        // Find out if compiler fences are enough to make that atomic.
-        // FIXME: use align_offset once it stabilizes
-        debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
+        unsafe {
+            // TODO: Use a volatile read here instead for better code generation.
+            // Find out if compiler fences are enough to make that atomic.
+            // FIXME: use align_offset once it stabilizes
+            debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
 
-        let mut result = x86::_mm_load_si128(ptr.cast());
+            let mut result = x86::_mm_load_si128(ptr.cast());
 
-        // Hide the `result` value since we need the backend to assume it could be the hardware
-        // instruction `movdqa` which has Ordering::Acquire semantics.
-        asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
+            // Hide the `result` value since we need the backend to assume it could be the hardware
+            // instruction `movdqa` which has Ordering::Acquire semantics.
+            asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
 
-        Group(result)
+            Group(result)
+        }
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which have

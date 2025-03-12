@@ -1,5 +1,5 @@
-use super::bitmask::BitMask;
 use super::EMPTY;
+use super::bitmask::BitMask;
 use core::intrinsics::atomic_load_acq;
 use core::mem;
 

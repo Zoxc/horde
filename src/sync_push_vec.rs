@@ -7,7 +7,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
+    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
     cell::UnsafeCell,
     intrinsics::unlikely,
     iter::FromIterator,
@@ -19,7 +19,7 @@ use std::{
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 mod code;
@@ -166,20 +166,22 @@ impl<T> TableRef<T> {
 
     #[inline]
     unsafe fn free(self) {
-        let items = self.info().items.load(Ordering::Relaxed);
-        if items > 0 {
-            if mem::needs_drop::<T>() {
-                for i in 0..items {
-                    self.data(i).drop_in_place();
+        unsafe {
+            let items = self.info().items.load(Ordering::Relaxed);
+            if items > 0 {
+                if mem::needs_drop::<T>() {
+                    for i in 0..items {
+                        self.data(i).drop_in_place();
+                    }
                 }
+
+                let (layout, info_offset) = Self::layout(self.info().capacity).unwrap_unchecked();
+
+                Global.deallocate(
+                    NonNull::new_unchecked((self.data.as_ptr() as *mut u8).sub(info_offset)),
+                    layout,
+                )
             }
-
-            let (layout, info_offset) = Self::layout(self.info().capacity).unwrap_unchecked();
-
-            Global.deallocate(
-                NonNull::new_unchecked((self.data.as_ptr() as *mut u8).sub(info_offset)),
-                layout,
-            )
         }
     }
 
@@ -201,66 +203,72 @@ impl<T> TableRef<T> {
         iter: I,
         new_capacity: usize,
     ) -> TableRef<T> {
-        debug_assert!(new_capacity > 0);
+        unsafe {
+            debug_assert!(new_capacity > 0);
 
-        let mut new_table = TableRef::<T>::allocate(new_capacity);
+            let mut new_table = TableRef::<T>::allocate(new_capacity);
 
-        let mut guard = guard(Some(new_table), |new_table| {
-            new_table.map(|new_table| new_table.free());
-        });
+            let mut guard = guard(Some(new_table), |new_table| {
+                new_table.map(|new_table| new_table.free());
+            });
 
-        // Copy all elements to the new table.
-        for (index, item) in iter.enumerate() {
-            debug_assert!(index < new_capacity);
-            if CHECK_LEN && index >= new_capacity {
-                break;
+            // Copy all elements to the new table.
+            for (index, item) in iter.enumerate() {
+                debug_assert!(index < new_capacity);
+                if CHECK_LEN && index >= new_capacity {
+                    break;
+                }
+
+                new_table.first().add(index).write(item);
+
+                // Write items per iteration in case `next` on the iterator panics.
+
+                *new_table.info_mut().items.get_mut() = index + 1;
             }
 
-            new_table.first().add(index).write(item);
+            *guard = None;
 
-            // Write items per iteration in case `next` on the iterator panics.
-
-            *new_table.info_mut().items.get_mut() = index + 1;
+            new_table
         }
-
-        *guard = None;
-
-        new_table
     }
 
     unsafe fn info(&self) -> &TableInfo {
-        self.data.as_ref()
+        unsafe { self.data.as_ref() }
     }
 
     unsafe fn info_mut(&mut self) -> &mut TableInfo {
-        self.data.as_mut()
+        unsafe { self.data.as_mut() }
     }
 
     #[inline]
     unsafe fn first(&self) -> *mut T {
-        (self.data.as_ptr() as *mut T).sub(self.info().capacity)
+        unsafe { (self.data.as_ptr() as *mut T).sub(self.info().capacity) }
     }
 
     /// Returns a pointer to an element in the table.
     #[inline]
     unsafe fn slice(&self) -> *const [T] {
-        let items = self.info().items.load(Ordering::Acquire);
-        let base = if items == 0 && mem::align_of::<T>() > 64 {
-            // Need a special case here since our empty allocation isn't aligned to T.
-            // It only has an alignment of 64.
-            mem::align_of::<T>() as *const T
-        } else {
-            self.first() as *const T
-        };
-        slice_from_raw_parts(base, items)
+        unsafe {
+            let items = self.info().items.load(Ordering::Acquire);
+            let base = if items == 0 && mem::align_of::<T>() > 64 {
+                // Need a special case here since our empty allocation isn't aligned to T.
+                // It only has an alignment of 64.
+                mem::align_of::<T>() as *const T
+            } else {
+                self.first() as *const T
+            };
+            slice_from_raw_parts(base, items)
+        }
     }
 
     /// Returns a pointer to an element in the table.
     #[inline]
     unsafe fn data(&self, index: usize) -> *mut T {
-        debug_assert!(index < self.info().items.load(Ordering::Acquire));
+        unsafe {
+            debug_assert!(index < self.info().items.load(Ordering::Acquire));
 
-        self.first().add(index)
+            self.first().add(index)
+        }
     }
 }
 
@@ -268,9 +276,11 @@ impl<T: Clone> TableRef<T> {
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
     unsafe fn clone(&self, new_capacity: usize) -> TableRef<T> {
-        debug_assert!(new_capacity >= self.info().capacity);
+        unsafe {
+            debug_assert!(new_capacity >= self.info().capacity);
 
-        TableRef::from_iter::<_, false>((*self.slice()).iter().cloned(), new_capacity)
+            TableRef::from_iter::<_, false>((*self.slice()).iter().cloned(), new_capacity)
+        }
     }
 }
 
@@ -284,10 +294,12 @@ unsafe impl<T: Send> Send for DestroyTable<T> {}
 
 impl<T> DestroyTable<T> {
     unsafe fn run(&self) {
-        let mut status = self.lock.lock();
-        if !*status {
-            *status = true;
-            self.table.free();
+        unsafe {
+            let mut status = self.lock.lock();
+            if !*status {
+                *status = true;
+                self.table.free();
+            }
         }
     }
 }
