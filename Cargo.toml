@@ -1,7 +1,7 @@
 [package]
 name = "horde"
 version = "0.1.1"
-edition = "2018"
+edition = "2021"
 authors = ["Zoxc <zoxc32@gmail.com>"]
 description = "a horde of threads"
 license = "MIT OR Apache-2.0"
