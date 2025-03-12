@@ -2,14 +2,15 @@
 
 use crate::{scopeguard::guard, util::cold_path};
 use parking_lot::Mutex;
+use std::arch::asm;
 use std::{
     cell::Cell,
     collections::HashMap,
     intrinsics::unlikely,
-    lazy::SyncLazy,
     marker::PhantomData,
     mem,
     sync::atomic::{AtomicUsize, Ordering},
+    sync::LazyLock,
     thread::{self, ThreadId},
 };
 
@@ -204,7 +205,7 @@ pub fn collect() {
     }
 }
 
-static COLLECTOR: SyncLazy<Mutex<Collector>> = SyncLazy::new(|| Mutex::new(Collector::new()));
+static COLLECTOR: LazyLock<Mutex<Collector>> = LazyLock::new(|| Mutex::new(Collector::new()));
 
 type Callbacks = Vec<Box<dyn FnOnce() + Send>>;
 

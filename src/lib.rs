@@ -4,13 +4,10 @@
 #![feature(
     alloc_layout_extra,
     allocator_api,
-    asm,
     core_intrinsics,
     dropck_eyepatch,
     extend_one,
     negative_impls,
-    once_cell,
-    option_result_unwrap_unchecked,
     thread_local
 )]
 #![allow(clippy::len_without_is_empty, clippy::type_complexity)]
