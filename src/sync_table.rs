@@ -3,7 +3,7 @@
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{self, Pin, pin},
+    collect::{self, pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{cold_path, make_insert_hash},
@@ -11,7 +11,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
+    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
@@ -68,7 +68,7 @@ impl<T> Bucket<T> {
     fn as_ptr(&self) -> *mut T {
         if mem::size_of::<T>() == 0 {
             // Just return an arbitrary ZST pointer which is properly aligned
-            mem::align_of::<T>() as *mut T
+            std::ptr::dangling_mut::<T>()
         } else {
             unsafe { self.ptr.as_ptr().sub(1) }
         }
@@ -128,7 +128,7 @@ pub struct Read<'a, K, V, S = DefaultHashBuilder> {
 impl<K, V, S> Copy for Read<'_, K, V, S> {}
 impl<K, V, S> Clone for Read<'_, K, V, S> {
     fn clone(&self) -> Self {
-        Self { table: self.table }
+        *self
     }
 }
 
@@ -347,10 +347,7 @@ impl<T> Copy for TableRef<T> {}
 impl<T> Clone for TableRef<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self {
-            data: self.data,
-            marker: self.marker,
-        }
+        *self
     }
 }
 
@@ -877,6 +874,21 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
                 .map(|(_, bucket)| bucket.as_pair_ref())
         }
     }
+
+    /// Gets a reference to an element in the table, using a closure to find the match.
+    #[inline]
+    pub fn get_from_hash(
+        self,
+        hash: u64,
+        mut is_match: impl FnMut(&K) -> bool,
+    ) -> Option<(&'a K, &'a V)> {
+        unsafe {
+            self.table
+                .current()
+                .find(hash, move |(k, _)| is_match(k))
+                .map(|(_, bucket)| bucket.as_pair_ref())
+        }
+    }
 }
 
 impl<'a, K, V, S> Read<'a, K, V, S> {
@@ -1203,8 +1215,7 @@ impl<'a> PotentialSlot<'a> {
             // Check that we are still looking at the same table,
             // otherwise our index could be out of date due to expansion
             // or a `replace` call.
-            table_info == (self.table_info as *const TableInfo)
-                && *self.table_info.ctrl(index) == EMPTY
+            std::ptr::eq(table_info, self.table_info) && *self.table_info.ctrl(index) == EMPTY
         }
     }
 
@@ -1429,7 +1440,11 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
-        if cap < 4 { 4 } else { 8 }
+        if cap < 4 {
+            4
+        } else {
+            8
+        }
     } else {
         // Otherwise require 1/8 buckets to be empty (87.5% load)
         //

@@ -9,8 +9,8 @@ use std::{
     intrinsics::unlikely,
     marker::PhantomData,
     mem,
-    sync::LazyLock,
     sync::atomic::{AtomicUsize, Ordering},
+    sync::LazyLock,
     thread::{self, ThreadId},
 };
 
@@ -53,12 +53,15 @@ where
     }
 }
 
-#[thread_local]
-static DATA: Data = Data {
-    pinned: Cell::new(false),
-    registered: Cell::new(false),
-    seen_events: Cell::new(0),
-};
+thread_local! {
+    static DATA: Data = const {
+        Data {
+            pinned: Cell::new(false),
+            registered: Cell::new(false),
+            seen_events: Cell::new(0),
+        }
+    };
+}
 
 struct Data {
     pinned: Cell<bool>,
@@ -94,6 +97,7 @@ cfg_if! {
         not(miri)
     ))] {
         #[inline]
+        #[allow(clippy::pointers_in_nomem_asm_block)]
         fn hide(mut data: *const Data) -> *const Data {
             // Hide the `data` value from LLVM to prevent it from generating multiple TLS accesses
             unsafe {
@@ -113,13 +117,13 @@ cfg_if! {
 // Never inline due to thread_local bugs
 #[inline(never)]
 fn data() -> *const Data {
-    &DATA as *const Data
+    DATA.with(|data| data as *const Data)
 }
 
 // Never inline due to thread_local bugs
 #[inline(never)]
 fn data_init() -> *const Data {
-    let data = hide(&DATA as *const Data);
+    let data = hide(DATA.with(|data| data as *const Data));
 
     {
         let data = unsafe { &*data };
@@ -241,7 +245,7 @@ impl Collector {
         debug_assert!(self.threads.contains_key(&thread::current().id()));
 
         let thread = &thread::current().id();
-        if *self.threads.get(&thread).unwrap() {
+        if *self.threads.get(thread).unwrap() {
             self.busy_count -= 1;
 
             if self.busy_count == 0
@@ -254,7 +258,7 @@ impl Collector {
             }
         }
 
-        self.threads.remove(&thread);
+        self.threads.remove(thread);
     }
 
     fn collect_unregistered(&mut self) -> Callbacks {

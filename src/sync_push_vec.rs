@@ -7,7 +7,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
+    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
     intrinsics::unlikely,
     iter::FromIterator,
@@ -19,7 +19,7 @@ use std::{
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{atomic::AtomicUsize, Arc},
 };
 
 mod code;
@@ -35,7 +35,7 @@ pub struct Read<'a, T> {
 impl<T> Copy for Read<'_, T> {}
 impl<T> Clone for Read<'_, T> {
     fn clone(&self) -> Self {
-        Self { table: self.table }
+        *self
     }
 }
 
@@ -94,10 +94,7 @@ impl<T> Copy for TableRef<T> {}
 impl<T> Clone for TableRef<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self {
-            data: self.data,
-            marker: self.marker,
-        }
+        *self
     }
 }
 
@@ -253,7 +250,7 @@ impl<T> TableRef<T> {
             let base = if items == 0 && mem::align_of::<T>() > 64 {
                 // Need a special case here since our empty allocation isn't aligned to T.
                 // It only has an alignment of 64.
-                mem::align_of::<T>() as *const T
+                std::ptr::dangling::<T>()
             } else {
                 self.first() as *const T
             };
