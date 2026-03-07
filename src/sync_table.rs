@@ -1008,7 +1008,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
 impl<'a, K: Send, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Removes an element from the table, and returns a reference to it if was present.
     #[inline]
-    pub fn remove<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&'a K, &'a V)>
+    pub fn remove<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&K, &V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Eq + Hash,
@@ -1061,7 +1061,7 @@ impl<'a, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new(&mut self, key: K, value: V, hash: Option<u64>) -> (&'a K, &'a V) {
+    pub fn insert_new(&mut self, key: K, value: V, hash: Option<u64>) -> (&K, &V) {
         let hash = self.table.unwrap_hash(&key, hash);
 
         let mut table = self.table.current();
@@ -1288,7 +1288,7 @@ impl<'a> PotentialSlot<'a> {
     #[inline]
     pub fn insert_new<'b, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher>(
         self,
-        table: &mut Write<'b, K, V, S>,
+        table: &'b mut Write<'_, K, V, S>,
         key: K,
         value: V,
         hash: Option<u64>,
@@ -1317,7 +1317,7 @@ impl<'a> PotentialSlot<'a> {
     #[inline]
     pub fn try_insert_new<'b, K: Hash, V, S: BuildHasher>(
         self,
-        table: &mut Write<'b, K, V, S>,
+        table: &'b mut Write<'_, K, V, S>,
         key: K,
         value: V,
         hash: Option<u64>,
@@ -1351,7 +1351,7 @@ impl<'a> PotentialSlot<'a> {
     #[inline]
     pub unsafe fn insert_new_unchecked<'b, K: Hash, V, S: BuildHasher>(
         self,
-        table: &mut Write<'b, K, V, S>,
+        table: &'b mut Write<'_, K, V, S>,
         key: K,
         value: V,
         hash: Option<u64>,
