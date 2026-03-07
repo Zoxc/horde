@@ -8,6 +8,7 @@
     extend_one,
     likely_unlikely
 )]
+#![allow(internal_features)]
 #![allow(clippy::len_without_is_empty, clippy::type_complexity)]
 
 #[macro_use]
