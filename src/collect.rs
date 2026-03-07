@@ -8,6 +8,7 @@ use std::{
     hint::unlikely,
     marker::PhantomData,
     mem,
+    panic::{self, AssertUnwindSafe},
     sync::atomic::{AtomicUsize, Ordering},
     sync::LazyLock,
     thread::{self, ThreadId},
@@ -15,23 +16,21 @@ use std::{
 
 mod code;
 
-// TODO: Use a reference count of pins and a PinRef ZST with a destructor that drops the reference
-// so a closure with the `pin` function isn't required.
-
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Represents a proof that no deferred methods will run for the lifetime `'a`.
+/// Represents a proof that no deferred callbacks will run for the lifetime `'a`.
 /// It can be used to access data structures in a lock-free manner.
 #[derive(Clone, Copy)]
 pub struct Pin<'a> {
     _private: PhantomData<&'a ()>,
 }
 
-// FIXME: Prevent pin calls inside the callback?
 /// This schedules a closure to run at some point after all threads are outside their current pinned
 /// regions.
 ///
 /// The closure will be called by the [collect] method.
+///
+/// This deferred callback must not call [pin] or [collect].
 ///
 /// # Safety
 /// This method is unsafe since the closure is not required to be `'static`.
@@ -55,17 +54,27 @@ where
 thread_local! {
     static DATA: Data = const {
         Data {
-            pinned: Cell::new(false),
-            registered: Cell::new(false),
+            state: Cell::new(State::Unregistered),
             seen_events: Cell::new(0),
         }
     };
     static EXIT_GUARD: ExitGuard = const { ExitGuard };
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum State {
+    // Valid states to immediately pin in.
+    // This is placed on top so `pin` can check these states with a single comparison.
+    Registered,
+    Pinned,
+
+    // Not valid states to immediately pin in
+    Unregistered,
+    Collecting,
+}
+
 struct Data {
-    pinned: Cell<bool>,
-    registered: Cell<bool>,
+    state: Cell<State>,
     seen_events: Cell<usize>,
 }
 
@@ -74,29 +83,6 @@ struct ExitGuard;
 impl Drop for ExitGuard {
     fn drop(&mut self) {
         release();
-    }
-}
-
-#[inline(never)]
-#[cold]
-fn panic_pinned() {
-    panic!("The current thread was pinned");
-}
-
-impl Data {
-    #[inline]
-    fn assert_unpinned(&self) {
-        if self.pinned.get() {
-            panic_pinned()
-        }
-    }
-
-    #[inline(never)]
-    #[cold]
-    fn register(&self) {
-        EXIT_GUARD.with(|_| ());
-        COLLECTOR.lock().register();
-        self.registered.set(true);
     }
 }
 
@@ -124,68 +110,72 @@ cfg_if! {
     }
 }
 
-// Never inline due to thread_local bugs
-#[inline(never)]
 fn data() -> *const Data {
     DATA.with(|data| data as *const Data)
 }
-
-// Never inline due to thread_local bugs
-#[inline(never)]
-fn data_init() -> *const Data {
-    let data = hide(DATA.with(|data| data as *const Data));
-
-    {
-        let data = unsafe { &*data };
-        if unlikely(!data.registered.get()) {
-            data.register();
-        }
-    }
-
-    data
-}
-
-// TODO: Can this be made into an OwnedPin type which restores the state when dropped?
-// Would need to check that only one of them is around?
-// Can we keep `pin` in that case? Could drop `OwnedPin` inside `pin`?
-// Using seperate flags for both of them might work.
-// Won't be optimized away like `pin`
-// Use a reference count?
 
 /// Marks the current thread as pinned and returns a proof of that to the closure.
 ///
 /// This adds the current thread to the set of threads that needs to regularly call [collect]
 /// before memory can be freed. [release] can be called if a thread no longer needs
 /// access to lock-free data structures for an extended period of time.
+///
+/// This will panic if called from a deferred callback.
 #[inline]
 pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
-    let data = unsafe { &*(hide(data_init())) };
-    let old_pinned = data.pinned.get();
-    data.pinned.set(true);
-    guard(old_pinned, |pin| data.pinned.set(*pin));
+    let data = unsafe { &*(hide(data())) };
+
+    if unlikely(!matches!(
+        data.state.get(),
+        State::Registered | State::Pinned
+    )) {
+        cold_path(|| pin_cold());
+    }
+
+    let old_state = data.state.get();
+    data.state.set(State::Pinned);
+    let _guard = guard(old_state, |state| data.state.set(*state));
     f(Pin {
         _private: PhantomData,
     })
 }
 
+#[inline(never)]
+#[cold]
+fn pin_cold() {
+    let data = unsafe { &*(hide(data())) };
+
+    match data.state.get() {
+        State::Unregistered => {
+            EXIT_GUARD.with(|_| ());
+            COLLECTOR.lock().register();
+            data.state.set(State::Registered);
+        }
+        State::Registered | State::Pinned => unreachable!(),
+        State::Collecting => cold_path(|| panic!("Deferred callbacks cannot call `pin`")),
+    }
+}
+
 /// Removes the current thread from the threads allowed to access lock-free data structures.
 ///
 /// This allows memory to be freed without waiting for [collect] calls from the current thread.
-/// [pin] can be called to after to continue accessing lock-free data structures.
+/// [pin] can be called after to continue accessing lock-free data structures.
 ///
-/// This will not free any garbage so [collect] should be called first before the last thread
+/// This will not free any garbage so [collect] should be called before the last thread
 /// terminates to avoid memory leaks.
 ///
-/// This will panic if called while the current thread is pinned.
+/// This will panic if called while the current thread is pinned or during a deferred callback.
 pub fn release() {
     let data = unsafe { &*(hide(data())) };
-    if cfg!(debug_assertions) {
-        data.assert_unpinned();
-    }
-    if data.registered.get() {
-        data.assert_unpinned();
-        data.registered.set(false);
-        COLLECTOR.lock().unregister();
+
+    match data.state.get() {
+        State::Unregistered => (),
+        State::Registered => {
+            data.state.set(State::Unregistered);
+            COLLECTOR.lock().unregister();
+        }
+        State::Pinned => cold_path(|| panic!("Cannot call `release` while pinned")),
+        State::Collecting => cold_path(|| panic!("Deferred callbacks cannot call `release`")),
     }
 }
 
@@ -193,31 +183,62 @@ pub fn release() {
 ///
 /// This may collect garbage using the callbacks registered in [Pin::defer_unchecked](struct.Pin.html#method.defer_unchecked).
 ///
-/// This will panic if called while a thread is pinned.
+/// This will panic if called while a thread is pinned or if called from a deferred callback.
 pub fn collect() {
     let data = unsafe { &*(hide(data())) };
+
     if cfg!(debug_assertions) {
-        data.assert_unpinned();
+        assert_collect_state(data);
     }
+
     let new = EVENTS.load(Ordering::Acquire);
     if unlikely(new != data.seen_events.get()) {
         data.seen_events.set(new);
-        cold_path(|| {
-            data.assert_unpinned();
+        collect_cold();
+    }
+}
 
-            let callbacks = {
-                let mut collector = COLLECTOR.lock();
+fn assert_collect_state(data: &Data) {
+    match data.state.get() {
+        State::Registered | State::Unregistered => (),
+        State::Pinned => panic!("Cannot call `collect` while pinned"),
+        State::Collecting => panic!("Deferred callbacks cannot call `collect`"),
+    }
+}
 
-                // Check if we could block any deferred methods
-                if data.registered.get() {
-                    collector.quiet()
-                } else {
-                    collector.collect_unregistered()
-                }
-            };
+#[inline(never)]
+#[cold]
+fn collect_cold() {
+    let data = unsafe { &*(hide(data())) };
+    assert_collect_state(data);
 
-            callbacks.into_iter().for_each(|callback| callback());
-        });
+    let old_state = data.state.get();
+    let _guard = guard(old_state, |state| data.state.set(*state));
+    data.state.set(State::Collecting);
+
+    let callbacks = {
+        let mut collector = COLLECTOR.lock();
+
+        // Check if we could block any deferred methods
+        if let State::Registered = old_state {
+            collector.quiet()
+        } else {
+            collector.collect_unregistered()
+        }
+    };
+
+    let mut panic = None;
+
+    for callback in callbacks {
+        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| {
+            callback();
+        })) {
+            panic = Some(payload);
+        }
+    }
+
+    if let Some(payload) = panic {
+        panic::resume_unwind(payload)
     }
 }
 
