@@ -7,7 +7,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
+    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
     cell::UnsafeCell,
     hint::unlikely,
     iter::FromIterator,
@@ -19,7 +19,7 @@ use std::{
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{atomic::AtomicUsize, Arc},
 };
 
 mod code;
@@ -455,7 +455,7 @@ impl<'a, T: Send + Clone> Write<'a, T> {
     /// Inserts a new element into the end of the table, and returns a refernce to it along
     /// with its index.
     #[inline]
-    pub fn push(&mut self, value: T) -> (&'a T, usize) {
+    pub fn push(&mut self, value: T) -> (&T, usize) {
         let mut table = self.table.current();
         unsafe {
             let items = table.info().items.load(Ordering::Relaxed);
