@@ -228,6 +228,12 @@ impl TableInfo {
         }
     }
 
+    /// Returns a control byte accessing it using an acquire load
+    #[inline]
+    unsafe fn ctrl_acquire(&self, index: usize) -> u8 {
+        unsafe { (&*(self.ctrl(index) as *const AtomicU8)).load(Ordering::Acquire) }
+    }
+
     /// Sets a control byte, and possibly also the replicated control byte at
     /// the end of the array.
     #[inline]
@@ -946,13 +952,13 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 
         unsafe {
             for i in 0..table.info().buckets() {
-                if *table.info().ctrl(i) == EMPTY {
+                if table.info().ctrl_acquire(i) == EMPTY {
                     println!("[#{:x}]", i);
                 } else {
                     println!(
                         "[#{:x}, ${:x}, {:?}]",
                         i,
-                        *table.info().ctrl(i),
+                        table.info().ctrl_acquire(i),
                         table.bucket(i).as_ref()
                     );
                 }
@@ -1215,7 +1221,8 @@ impl<'a> PotentialSlot<'a> {
             // Check that we are still looking at the same table,
             // otherwise our index could be out of date due to expansion
             // or a `replace` call.
-            std::ptr::eq(table_info, self.table_info) && *self.table_info.ctrl(index) == EMPTY
+            std::ptr::eq(table_info, self.table_info)
+                && self.table_info.ctrl_acquire(index) == EMPTY
         }
     }
 
