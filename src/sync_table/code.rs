@@ -1,172 +1,185 @@
 #![cfg(code)]
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 use crate::collect::Pin;
 
 use super::{PotentialSlot, Read, SyncTable, TableRef, Write};
 
-#[no_mangle]
-unsafe fn bucket_index(t: TableRef<usize>, i: usize) -> *mut usize {
-    t.bucket(i).as_ptr()
+#[unsafe(no_mangle)]
+unsafe fn bucket_index(t: TableRef<(usize, usize)>, i: usize) -> *mut (usize, usize) {
+    unsafe { t.bucket(i).as_ptr() }
 }
 
-#[no_mangle]
-unsafe fn ctrl_index(t: TableRef<usize>, i: usize) -> *mut u8 {
-    t.info().ctrl(i)
+#[unsafe(no_mangle)]
+unsafe fn ctrl_index(t: TableRef<(usize, usize)>, i: usize) -> *mut u8 {
+    unsafe { t.info.ctrl(i) }
 }
 
-#[no_mangle]
-unsafe fn first_bucket(t: TableRef<usize>) -> *mut usize {
-    t.bucket_before_first()
+#[unsafe(no_mangle)]
+unsafe fn first_bucket(t: TableRef<(usize, usize)>) -> *mut (usize, usize) {
+    unsafe { t.bucket_before_first() }
 }
 
-#[no_mangle]
-unsafe fn last_bucket(t: TableRef<usize>) -> *mut usize {
-    t.bucket_past_last()
+#[unsafe(no_mangle)]
+unsafe fn last_bucket(t: TableRef<(usize, usize)>) -> *mut (usize, usize) {
+    unsafe { t.bucket_past_last() }
 }
 
-#[no_mangle]
-fn alloc_test(bucket_count: usize) -> TableRef<usize> {
+#[unsafe(no_mangle)]
+fn alloc_test(bucket_count: usize) -> TableRef<(usize, usize)> {
     TableRef::allocate(bucket_count)
 }
 
-#[no_mangle]
-fn len_test(table: &mut SyncTable<u64>) {
+#[unsafe(no_mangle)]
+fn len_test(table: &mut SyncTable<u64, u64>) {
     table.write().read().len();
 }
 
-#[no_mangle]
-fn get_potential_test(table: &SyncTable<usize>, pin: Pin<'_>) -> Result<usize, PotentialSlot> {
-    table.read(pin).get_potential(5, |a| *a == 5).map(|b| *b)
+#[unsafe(no_mangle)]
+fn get_potential_test<'a>(
+    table: &'a SyncTable<usize, usize>,
+    pin: Pin<'a>,
+) -> Result<usize, PotentialSlot<'a>> {
+    table.read(pin).get_potential(&5, None).map(|(_, v)| *v)
 }
 
-#[no_mangle]
-fn potential_get_test(potential: PotentialSlot, table: Read<'_, usize>) -> Option<usize> {
-    potential.get(table, 5, |a| *a == 5).map(|b| *b)
+#[unsafe(no_mangle)]
+fn potential_get_test(
+    potential: PotentialSlot<'_>,
+    table: Read<'_, usize, usize>,
+) -> Option<usize> {
+    potential.get(table, &5, None).map(|(_, v)| *v)
 }
 
-#[no_mangle]
-fn potential_insert(potential: PotentialSlot, mut table: Write<'_, usize>) {
-    potential.insert_new(&mut table, 5, 5, |_, h| *h as u64);
+#[unsafe(no_mangle)]
+fn potential_insert(potential: PotentialSlot<'_>, mut table: Write<'_, usize, usize>) {
+    potential.insert_new(&mut table, 5, 5, None);
 }
 
-#[no_mangle]
-unsafe fn potential_insert_opt(mut table: Write<'_, usize>, index: usize) {
+#[unsafe(no_mangle)]
+unsafe fn potential_insert_opt(mut table: Write<'_, usize, usize>, index: usize) {
     let potential = PotentialSlot {
-        bucket_mask: table.table.current().info().bucket_mask,
+        table_info: table.table.current().info,
         index,
+        marker: PhantomData,
     };
-    potential.insert_new(&mut table, 5, 5, |_, h| *h as u64);
+    potential.insert_new(&mut table, 5, 5, None);
 }
 
-#[no_mangle]
-fn find_test(table: &SyncTable<usize>, val: usize, hash: u64) -> Option<usize> {
-    unsafe { table.find(hash, |a| *a == val).map(|b| *b.as_ref()) }
+#[unsafe(no_mangle)]
+fn find_test(table: &SyncTable<usize, usize>, val: usize, hash: u64) -> Option<usize> {
+    unsafe {
+        table
+            .current()
+            .find(hash, |(key, _)| *key == val)
+            .map(|(_, bucket)| *bucket.as_pair_ref().1)
+    }
 }
 
-#[no_mangle]
-fn insert_test(table: &SyncTable<u64>) {
-    table.lock().insert_new(5, 5, |_, a| *a);
+#[unsafe(no_mangle)]
+fn insert_test(table: &SyncTable<u64, u64>) {
+    table.lock().insert_new(5, 5, None);
 }
 
-#[no_mangle]
-fn map_insert_test(table: &mut SyncTable<(u64, u64)>) {
-    table.write().map_insert(5, 5);
+#[unsafe(no_mangle)]
+fn map_insert_test(table: &mut SyncTable<u64, u64>) {
+    table.write().insert(5, 5, None);
 }
 
-#[no_mangle]
-unsafe fn insert_test2(table: &SyncTable<u64>) {
-    table.unsafe_write().insert_new(5, 5, |_, a| *a);
+#[unsafe(no_mangle)]
+unsafe fn insert_test2(table: &SyncTable<u64, u64>) {
+    unsafe { table.unsafe_write() }.insert_new(5, 5, None);
 }
 
-#[no_mangle]
-unsafe fn insert_slot_test(table: TableRef<usize>, hash: u64) -> usize {
-    table.info().find_insert_slot(hash)
+#[unsafe(no_mangle)]
+unsafe fn insert_slot_test(table: TableRef<(usize, usize)>, hash: u64) -> usize {
+    unsafe { table.info.find_insert_slot(hash) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn find_test2(table: &HashMap<usize, ()>) -> Option<usize> {
     table.get_key_value(&5).map(|b| *b.0)
 }
 
-#[no_mangle]
-fn intern_triple_test(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
-    match table.read(pin).get(hash, |v| v.0 == k) {
-        Some(v) => return v.1,
+#[unsafe(no_mangle)]
+fn intern_triple_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+    let hash = table.hash_key(&k);
+    match table.read(pin).get(&k, Some(hash)) {
+        Some((_, v)) => return *v,
         None => (),
     };
 
     let mut write = table.lock();
-    match write.read().get(hash, |v| v.0 == k) {
-        Some(v) => v.1,
+    match write.read().get(&k, Some(hash)) {
+        Some((_, v)) => *v,
         None => {
-            write.insert_new(hash, (k, v), SyncTable::hasher);
+            write.insert_new(k, v, Some(hash));
             v
         }
     }
 }
 
-#[no_mangle]
-fn intern_try_test(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
-    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
-        Ok(v) => return v.1,
+#[unsafe(no_mangle)]
+fn intern_try_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+    let hash = table.hash_key(&k);
+    let p = match table.read(pin).get_potential(&k, Some(hash)) {
+        Ok((_, v)) => return *v,
         Err(p) => p,
     };
 
     let mut write = table.lock();
-    match p.get(write.read(), hash, |v| v.0 == k) {
-        Some(v) => v.1,
+    match p.get(write.read(), &k, Some(hash)) {
+        Some((_, v)) => *v,
         None => {
-            p.try_insert_new(&mut write, hash, (k, v));
+            p.try_insert_new(&mut write, k, v, Some(hash));
             v
         }
     }
 }
 
-#[no_mangle]
-fn intern_test(table: &SyncTable<(u64, u64)>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_any(&k);
-    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
-        Ok(v) => return v.1,
+#[unsafe(no_mangle)]
+fn intern_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
+    let hash = table.hash_key(&k);
+    let p = match table.read(pin).get_potential(&k, Some(hash)) {
+        Ok((_, v)) => return *v,
         Err(p) => p,
     };
 
     let mut write = table.lock();
-    match p.get(write.read(), hash, |v| v.0 == k) {
-        Some(v) => v.1,
+    match p.get(write.read(), &k, Some(hash)) {
+        Some((_, v)) => *v,
         None => {
-            p.insert_new(&mut write, hash, (k, v), SyncTable::hasher);
+            p.insert_new(&mut write, k, v, Some(hash));
             v
         }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn intern_refresh_test(
-    table: &SyncTable<(u64, u64)>,
+    table: &SyncTable<u64, u64>,
     k: u64,
     v: u64,
     hash: u64,
     pin: Pin<'_>,
 ) -> u64 {
-    let p = match table.read(pin).get_potential(hash, |v| v.0 == k) {
-        Ok(v) => return v.1,
+    let p = match table.read(pin).get_potential(&k, Some(hash)) {
+        Ok((_, v)) => return *v,
         Err(p) => p,
     };
 
     let mut write = table.lock();
 
-    write.reserve_one(SyncTable::hasher);
+    write.reserve_one();
 
-    let p = p.refresh(write.read(), hash, |v| v.0 == k);
+    let p = p.refresh(table.read(pin), &k, Some(hash));
 
     match p {
-        Ok(v) => v.1,
+        Ok((_, v)) => *v,
         Err(p) => {
-            p.try_insert_new(&mut write, hash, (k, v));
+            p.try_insert_new(&mut write, k, v, Some(hash));
             v
         }
     }

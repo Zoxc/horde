@@ -1,0 +1,1 @@
+Use `cargo rustc --release -- --cfg code` to generate code examples for inspection.

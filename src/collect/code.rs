@@ -3,24 +3,24 @@
 use crate::collect;
 
 #[inline(never)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe fn dummy() {
-    if *(5345 as *const bool) {
+    if unsafe { *(5345 as *const bool) } {
         panic!("whoops")
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe fn pin_test() {
-    collect::pin(|_| dummy());
+    collect::pin(|_| unsafe { dummy() });
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe fn collect_test() {
     collect::collect();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe fn release_test() {
     collect::release();
 }
