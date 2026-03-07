@@ -2,15 +2,14 @@
 
 use crate::{scopeguard::guard, util::cold_path};
 use parking_lot::Mutex;
-use std::arch::asm;
 use std::{
     cell::Cell,
     collections::HashMap,
     hint::unlikely,
     marker::PhantomData,
     mem,
-    sync::LazyLock,
     sync::atomic::{AtomicUsize, Ordering},
+    sync::LazyLock,
     thread::{self, ThreadId},
 };
 
@@ -99,6 +98,7 @@ cfg_if! {
         #[inline]
         #[allow(clippy::pointers_in_nomem_asm_block)]
         fn hide(mut data: *const Data) -> *const Data {
+            use std::arch::asm;
             // Hide the `data` value from LLVM to prevent it from generating multiple TLS accesses
             unsafe {
                 asm!("/* {} */", inout(reg) data, options(pure, nomem, nostack, preserves_flags));

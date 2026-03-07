@@ -22,6 +22,7 @@ fn test_iter() {
 #[test]
 fn test_high_align() {
     #[repr(align(128))]
+    #[allow(dead_code)]
     #[derive(Clone)]
     struct A(u8);
     let mut m = SyncPushVec::<A>::new();
