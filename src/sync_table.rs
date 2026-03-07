@@ -202,14 +202,12 @@ impl TableInfo {
         self.bucket_mask + 1
     }
 
+    /// The number of items in the table. It can race if the writer lock is not held.
     #[inline]
     fn items(&self) -> usize {
-        // FIXME: May overflow and return wrong value.
-        // TODO: Or will they synchronize due to the lock?
-        // NO: A concurrent write / remove may happen which puts them out of sync?
         bucket_mask_to_capacity(self.bucket_mask)
-            - self.growth_left.load(Ordering::Acquire)
-            - self.tombstones.load(Ordering::Acquire)
+            .saturating_sub(self.growth_left.load(Ordering::Acquire))
+            .saturating_sub(self.tombstones.load(Ordering::Acquire))
     }
 
     /// Returns a pointer to a control byte.
@@ -920,6 +918,8 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
     }
 
     /// Returns the number of elements in the table.
+    ///
+    /// This value may be inaccurate if there's concurrent writers.
     #[inline]
     pub fn len(self) -> usize {
         unsafe { self.table.current().info().items() }
