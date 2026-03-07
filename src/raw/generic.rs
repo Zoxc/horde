@@ -1,5 +1,5 @@
-use super::EMPTY;
 use super::bitmask::BitMask;
+use super::EMPTY;
 use core::mem;
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -66,7 +66,6 @@ impl Group {
 
     /// Loads a group of bytes starting at the given address.
     #[inline]
-    #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
             let mut bytes = [0u8; Group::WIDTH];
@@ -80,10 +79,9 @@ impl Group {
     /// Loads a group of bytes starting at the given address, which must be
     /// aligned to `mem::align_of::<Group>()`.
     #[inline]
-    #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
-        // FIXME: use align_offset once it stabilizes
-        debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
+        // FIXME: use is_aligned_to once it stabilizes
+        debug_assert_eq!(ptr.align_offset(mem::align_of::<Self>()), 0);
         unsafe { Group::load(ptr) }
     }
 

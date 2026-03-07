@@ -1,5 +1,5 @@
-use super::EMPTY;
 use super::bitmask::BitMask;
+use super::EMPTY;
 use core::arch::asm;
 use core::mem;
 
@@ -45,14 +45,15 @@ impl Group {
 
     /// Loads a group of bytes starting at the given address.
     #[inline]
-    #[allow(clippy::cast_ptr_alignment)] // unaligned load
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
-            let mut result = x86::_mm_loadu_si128(ptr.cast());
-
-            // Hide the `result` value since we need the backend to assume it could be the hardware
-            // instruction `movdqu` which has Ordering::Acquire semantics.
-            asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
+            let result;
+            asm!(
+                "movdqu {result}, xmmword ptr [{ptr}]",
+                ptr = in(reg) ptr,
+                result = lateout(xmm_reg) result,
+                options(readonly, nostack, preserves_flags)
+            );
 
             Group(result)
         }
@@ -61,19 +62,18 @@ impl Group {
     /// Loads a group of bytes starting at the given address, which must be
     /// aligned to `mem::align_of::<Group>()`.
     #[inline]
-    #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
         unsafe {
-            // TODO: Use a volatile read here instead for better code generation.
-            // Find out if compiler fences are enough to make that atomic.
-            // FIXME: use align_offset once it stabilizes
-            debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
+            // FIXME: use is_aligned_to once it stabilizes
+            debug_assert_eq!(ptr.align_offset(mem::align_of::<Self>()), 0);
 
-            let mut result = x86::_mm_load_si128(ptr.cast());
-
-            // Hide the `result` value since we need the backend to assume it could be the hardware
-            // instruction `movdqa` which has Ordering::Acquire semantics.
-            asm!("/* {} */", inout(xmm_reg) result, options(pure, readonly, nostack, preserves_flags));
+            let result;
+            asm!(
+                "movdqa {result}, xmmword ptr [{ptr}]",
+                ptr = in(reg) ptr,
+                result = lateout(xmm_reg) result,
+                options(readonly, nostack, preserves_flags)
+            );
 
             Group(result)
         }
