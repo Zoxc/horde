@@ -136,6 +136,8 @@ impl<T> TableRef<T> {
 
     #[inline]
     fn allocate(capacity: usize) -> Self {
+        debug_assert!(capacity > 0);
+
         let (layout, info_offset) = Self::layout(capacity).expect("capacity overflow");
 
         let ptr: NonNull<u8> = Global
@@ -164,15 +166,16 @@ impl<T> TableRef<T> {
     #[inline]
     unsafe fn free(self) {
         unsafe {
-            let items = self.info().items.load(Ordering::Relaxed);
-            if items > 0 {
+            let capacity = self.info().capacity;
+            if capacity > 0 {
                 if mem::needs_drop::<T>() {
+                    let items = self.info().items.load(Ordering::Relaxed);
                     for i in 0..items {
                         self.data(i).drop_in_place();
                     }
                 }
 
-                let (layout, info_offset) = Self::layout(self.info().capacity).unwrap_unchecked();
+                let (layout, info_offset) = Self::layout(capacity).unwrap_unchecked();
 
                 Global.deallocate(
                     NonNull::new_unchecked((self.data.as_ptr() as *mut u8).sub(info_offset)),
