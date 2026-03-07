@@ -1,13 +1,15 @@
 #![cfg(test)]
 
 use super::SyncTable;
-use crate::collect::Pin;
 use crate::collect::pin;
 use crate::collect::release;
+use crate::collect::Pin;
 use std::collections::hash_map::RandomState;
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{hash_map::DefaultHasher, HashMap},
     hash::Hasher,
+    sync::Barrier,
+    thread,
 };
 
 #[test]
@@ -76,6 +78,129 @@ fn test_insert() {
     assert_eq!(m.lock().read().len(), 2);
     assert_eq!(*m.lock().read().get(&1, None).unwrap().1, 2);
     assert_eq!(*m.lock().read().get(&2, None).unwrap().1, 4);
+
+    release();
+}
+
+#[test]
+fn concurrent_get_and_insert() {
+    let table = SyncTable::new();
+    let barrier = Barrier::new(2);
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            barrier.wait();
+
+            for _ in 0..8 {
+                pin(|pin| {
+                    let _ = table.read(pin).get(&1, None).map(|(_, value)| *value);
+                });
+                thread::yield_now();
+            }
+
+            barrier.wait();
+
+            pin(|pin| {
+                assert_eq!(
+                    table.read(pin).get(&1, None).map(|(_, value)| *value),
+                    Some(2)
+                );
+            });
+
+            release();
+        });
+
+        scope.spawn(|| {
+            barrier.wait();
+            assert!(table.lock().insert(1, 2, None));
+            barrier.wait();
+        });
+    });
+
+    release();
+}
+
+#[test]
+fn concurrent_get_and_remove() {
+    let table = SyncTable::new();
+    let barrier = Barrier::new(2);
+
+    assert!(table.lock().insert(1, 2, None));
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            barrier.wait();
+
+            for _ in 0..8 {
+                pin(|pin| {
+                    let _ = table.read(pin).get(&1, None).map(|(_, value)| *value);
+                });
+                thread::yield_now();
+            }
+
+            barrier.wait();
+
+            pin(|pin| {
+                assert!(table.read(pin).get(&1, None).is_none());
+            });
+
+            release();
+        });
+
+        scope.spawn(|| {
+            barrier.wait();
+            assert_eq!(
+                table.lock().remove(&1, None).map(|(_, value)| *value),
+                Some(2)
+            );
+            barrier.wait();
+        });
+    });
+
+    release();
+}
+
+#[test]
+fn concurrent_insert_remove_and_get() {
+    let table = SyncTable::new();
+    let barrier = Barrier::new(2);
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            barrier.wait();
+
+            for _ in 0..8 {
+                pin(|pin| {
+                    let _ = table.read(pin).get(&1, None).map(|(_, value)| *value);
+                    let _ = table.read(pin).get(&2, None).map(|(_, value)| *value);
+                });
+                thread::yield_now();
+            }
+
+            barrier.wait();
+
+            pin(|pin| {
+                assert!(table.read(pin).get(&1, None).is_none());
+                assert_eq!(
+                    table.read(pin).get(&2, None).map(|(_, value)| *value),
+                    Some(4)
+                );
+            });
+
+            release();
+        });
+
+        scope.spawn(|| {
+            barrier.wait();
+            assert!(table.lock().insert(1, 2, None));
+            assert_eq!(
+                table.lock().remove(&1, None).map(|(_, value)| *value),
+                Some(2)
+            );
+            assert!(table.lock().insert(2, 4, None));
+            barrier.wait();
+        });
+    });
 
     release();
 }
