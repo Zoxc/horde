@@ -8,8 +8,8 @@ use std::{
     hint::unlikely,
     marker::PhantomData,
     mem,
-    sync::atomic::{AtomicUsize, Ordering},
     sync::LazyLock,
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{self, ThreadId},
 };
 
