@@ -9,7 +9,7 @@ use parking_lot::{Mutex, MutexGuard};
 use std::{
     alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
     cell::UnsafeCell,
-    intrinsics::unlikely,
+    hint::unlikely,
     iter::FromIterator,
     marker::PhantomData,
     mem,

@@ -1,7 +1,13 @@
 //! This crate contains [SyncTable] and [SyncPushVec] which offers lock-free reads and uses
 //! quiescent state based reclamation for which an API is available in the [collect] module.
 
-#![feature(allocator_api, core_intrinsics, dropck_eyepatch, extend_one)]
+#![feature(
+    allocator_api,
+    core_intrinsics,
+    dropck_eyepatch,
+    extend_one,
+    likely_unlikely
+)]
 #![allow(clippy::len_without_is_empty, clippy::type_complexity)]
 
 #[macro_use]

@@ -6,7 +6,7 @@ use std::arch::asm;
 use std::{
     cell::Cell,
     collections::HashMap,
-    intrinsics::unlikely,
+    hint::unlikely,
     marker::PhantomData,
     mem,
     sync::LazyLock,

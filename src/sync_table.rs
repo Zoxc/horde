@@ -15,7 +15,7 @@ use std::{
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
-    intrinsics::{likely, unlikely},
+    hint::{likely, unlikely},
     iter::{FromIterator, FusedIterator},
     marker::PhantomData,
     mem,
