@@ -8,8 +8,8 @@ use std::{
     hint::unlikely,
     marker::PhantomData,
     mem,
-    sync::LazyLock,
     sync::atomic::{AtomicUsize, Ordering},
+    sync::LazyLock,
     thread::{self, ThreadId},
 };
 
@@ -60,12 +60,21 @@ thread_local! {
             seen_events: Cell::new(0),
         }
     };
+    static EXIT_GUARD: ExitGuard = const { ExitGuard };
 }
 
 struct Data {
     pinned: Cell<bool>,
     registered: Cell<bool>,
     seen_events: Cell<usize>,
+}
+
+struct ExitGuard;
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        release();
+    }
 }
 
 #[inline(never)]
@@ -85,6 +94,7 @@ impl Data {
     #[inline(never)]
     #[cold]
     fn register(&self) {
+        EXIT_GUARD.with(|_| ());
         COLLECTOR.lock().register();
         self.registered.set(true);
     }
@@ -235,17 +245,13 @@ impl Collector {
     }
 
     fn register(&mut self) {
-        debug_assert!(!self.threads.contains_key(&thread::current().id()));
-
         self.busy_count += 1;
-        self.threads.insert(thread::current().id(), false);
+        assert!(self.threads.insert(thread::current().id(), false).is_none());
     }
 
     fn unregister(&mut self) {
-        debug_assert!(self.threads.contains_key(&thread::current().id()));
-
-        let thread = &thread::current().id();
-        if *self.threads.get(thread).unwrap() {
+        let quiet = self.threads.remove(&thread::current().id()).unwrap();
+        if !quiet {
             self.busy_count -= 1;
 
             if self.busy_count == 0
@@ -257,8 +263,6 @@ impl Collector {
                 EVENTS.fetch_add(1, Ordering::Release);
             }
         }
-
-        self.threads.remove(thread);
     }
 
     fn collect_unregistered(&mut self) -> Callbacks {
