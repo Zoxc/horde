@@ -1,5 +1,5 @@
-use super::bitmask::BitMask;
 use super::EMPTY;
+use super::bitmask::BitMask;
 use core::arch::asm;
 use core::mem;
 

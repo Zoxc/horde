@@ -16,8 +16,8 @@ use std::{
     marker::PhantomData,
     mem,
     panic::{self, AssertUnwindSafe},
-    sync::atomic::{AtomicUsize, Ordering},
     sync::LazyLock,
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{self, ThreadId},
 };
 
@@ -304,10 +304,11 @@ impl Collector {
 
     fn register(&mut self) {
         self.busy_count += 1;
-        assert!(self
-            .threads
-            .insert(thread::current().id(), ThreadState::Busy)
-            .is_none());
+        assert!(
+            self.threads
+                .insert(thread::current().id(), ThreadState::Busy)
+                .is_none()
+        );
     }
 
     fn unregister(&mut self) {

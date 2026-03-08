@@ -3,7 +3,7 @@
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{self, pin, Pin},
+    collect::{self, Pin, pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{cold_path, make_insert_hash},
@@ -11,7 +11,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{handle_alloc_error, Allocator, Global, Layout, LayoutError},
+    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
@@ -309,7 +309,8 @@ impl TableInfoRef {
             // ---------------------------------------------
             // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
             // ---------------------------------------------
-            let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.info().bucket_mask) + Group::WIDTH;
+            let index2 =
+                ((index.wrapping_sub(Group::WIDTH)) & self.info().bucket_mask) + Group::WIDTH;
 
             *self.ctrl(index) = ctrl;
             *self.ctrl(index2) = ctrl;
@@ -321,7 +322,8 @@ impl TableInfoRef {
     #[inline]
     unsafe fn set_ctrl_release(self, index: usize, ctrl: u8) {
         unsafe {
-            let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.info().bucket_mask) + Group::WIDTH;
+            let index2 =
+                ((index.wrapping_sub(Group::WIDTH)) & self.info().bucket_mask) + Group::WIDTH;
 
             (*(self.ctrl(index) as *mut AtomicU8)).store(ctrl, Ordering::Release);
             (*(self.ctrl(index2) as *mut AtomicU8)).store(ctrl, Ordering::Release);
