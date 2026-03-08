@@ -19,7 +19,7 @@ use std::{
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{Arc, Weak, atomic::AtomicUsize},
 };
 
 mod code;
@@ -72,7 +72,7 @@ pub struct SyncPushVec<T> {
 
     lock: Mutex<()>,
 
-    old: UnsafeCell<Vec<Arc<DestroyTable<T>>>>,
+    old: UnsafeCell<Vec<Weak<DestroyTable<T>>>>,
 
     // Tell dropck that we own instances of T.
     marker: PhantomData<T>,
@@ -309,7 +309,9 @@ unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
         unsafe {
             self.current().free();
             for table in self.old.get_mut() {
-                table.run();
+                if let Some(table) = table.upgrade() {
+                    table.run();
+                }
             }
         }
     }
@@ -322,7 +324,9 @@ impl<T> Drop for SyncPushVec<T> {
         unsafe {
             self.current().free();
             for table in self.old.get_mut() {
-                table.run();
+                if let Some(table) = table.upgrade() {
+                    table.run();
+                }
             }
         }
     }
@@ -554,7 +558,22 @@ impl<'a, T: Send + Clone> Write<'a, T> {
 }
 
 impl<T: Send> Write<'_, T> {
+    fn prune_old_tables(&mut self) {
+        unsafe {
+            (*self.table.old.get()).retain(|table| {
+                if let Some(table) = table.upgrade() {
+                    let is_done = *table.lock.lock();
+                    !is_done
+                } else {
+                    false
+                }
+            });
+        }
+    }
+
     fn replace_table(&mut self, new_table: TableRef<T>) {
+        self.prune_old_tables();
+
         let table = self.table.current();
 
         self.table
@@ -567,7 +586,7 @@ impl<T: Send> Write<'_, T> {
         });
 
         unsafe {
-            (*self.table.old.get()).push(destroy.clone());
+            (*self.table.old.get()).push(Arc::downgrade(&destroy));
 
             collect::defer_unchecked(move || destroy.run());
         }
