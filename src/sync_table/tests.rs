@@ -8,7 +8,9 @@ use std::collections::hash_map::RandomState;
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
+    sync::Arc,
     sync::Barrier,
+    sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
 
@@ -84,6 +86,36 @@ fn test_remove() {
     assert_eq!(m.lock().read().get(&5, None), None);
     assert_eq!(m.lock().read().len(), 0);
     release();
+}
+
+#[test]
+fn remove_drops_values_after_reclamation() {
+    #[derive(Clone)]
+    struct DropCounter(Arc<AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let table = SyncTable::new();
+
+    assert!(
+        table
+            .lock()
+            .insert(1usize, DropCounter(drops.clone()), None)
+    );
+    assert_eq!(table.lock().remove(&1usize, None).map(|(k, _)| *k), Some(1));
+
+    table.lock().replace(Vec::<(usize, DropCounter)>::new(), 0);
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
 #[test]

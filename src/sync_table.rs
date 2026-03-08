@@ -475,8 +475,10 @@ impl<T> TableRef<T> {
         unsafe {
             if self.info().bucket_mask > 0 {
                 if mem::needs_drop::<T>() {
-                    for item in self.iter() {
-                        item.drop();
+                    for index in 0..self.info().buckets() {
+                        if *self.info.ctrl(index) != EMPTY {
+                            self.bucket(index).drop();
+                        }
                     }
                 }
                 let (layout, info_offset) = Self::layout(self.info().buckets()).unwrap_unchecked();
