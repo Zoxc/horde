@@ -1,4 +1,11 @@
 //! An API for quiescent state based reclamation.
+//!
+//! Threads that read shared lock-free data call [pin] to mark the duration of the critical
+//! section. Destruction of removed data is postponed with [defer_unchecked] and later driven by
+//! [collect], which advances the global quiescent-state cycle.
+//!
+//! Long-lived threads that stop interacting with lock-free structures should call [release] so
+//! they no longer delay reclamation.
 
 use crate::{scopeguard::guard, util::cold_path};
 use parking_lot::Mutex;
@@ -16,21 +23,26 @@ use std::{
 
 mod code;
 
+/// Monotonic event counter used to notify threads that reclamation state changed.
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Represents a proof that no deferred callbacks will run for the lifetime `'a`.
-/// It can be used to access data structures in a lock-free manner.
+///
+/// A `Pin` is handed to the closure passed to [pin] and can be used to access data structures in
+/// a lock-free manner while the current thread remains pinned.
 #[derive(Clone, Copy)]
 pub struct Pin<'a> {
     _private: PhantomData<&'a ()>,
 }
 
-/// This schedules a closure to run at some point after all threads are outside their current pinned
-/// regions.
+/// Schedules a closure to run after all threads leave their current pinned regions.
 ///
 /// The closure will be called by the [collect] method.
 ///
 /// This deferred callback must not call [pin] or [collect].
+///
+/// Deferred callbacks run in a later collection cycle on whichever thread performs that collection.
+/// They are typically used to destroy or free data that was removed from a lock-free structure.
 ///
 /// # Safety
 /// This method is unsafe since the closure is not required to be `'static`.
@@ -65,19 +77,27 @@ thread_local! {
 enum State {
     // Valid states to immediately pin in.
     // This is placed on top so `pin` can check these states with a single comparison.
+    /// Registered with the collector and allowed to enter a pinned region immediately.
     Registered,
+    /// Currently inside a pinned region.
     Pinned,
 
     // Not valid states to immediately pin in
+    /// Not currently known to the collector.
     Unregistered,
+    /// Running deferred callbacks as part of a collection pass.
     Collecting,
 }
 
+/// Per-thread state tracked in thread-local storage.
 struct Data {
+    /// Current collector state for the thread.
     state: Cell<State>,
+    /// Last observed value of [EVENTS].
     seen_events: Cell<usize>,
 }
 
+/// Releases the current thread from the collector when the thread exits.
 struct ExitGuard;
 
 impl Drop for ExitGuard {
@@ -110,6 +130,7 @@ cfg_if! {
     }
 }
 
+/// Returns the address of the current thread's collector state.
 fn data() -> *const Data {
     DATA.with(|data| data as *const Data)
 }
@@ -119,6 +140,8 @@ fn data() -> *const Data {
 /// This adds the current thread to the set of threads that needs to regularly call [collect]
 /// before memory can be freed. [release] can be called if a thread no longer needs
 /// access to lock-free data structures for an extended period of time.
+///
+/// Nested calls to [pin] are allowed.
 ///
 /// This will panic if called from a deferred callback.
 #[inline]
@@ -163,6 +186,8 @@ fn pin_cold() {
 ///
 /// This will not free any garbage so [collect] should be called before the last thread
 /// terminates to avoid memory leaks.
+///
+/// Calling this function when the thread is already unregistered is a no-op.
 ///
 /// This will panic if called while the current thread is pinned or during a deferred callback.
 pub fn release() {
@@ -248,15 +273,23 @@ type Callbacks = Vec<Box<dyn FnOnce() + Send>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ThreadState {
+    /// The thread reported a quiescent state for the current epoch.
     Quiet,
+    /// The thread still needs to report a quiescent state for the current epoch.
     Busy,
 }
 
+/// Global collector state shared by all participating threads.
 struct Collector {
+    /// Indicates that another collection pass should be attempted. Set when the last busy thread is unregistered.
     pending: bool,
+    /// Number of registered threads still marked as [ThreadState::Busy].
     busy_count: usize,
+    /// Per-thread participation state for the current epoch.
     threads: HashMap<ThreadId, ThreadState>,
+    /// Callbacks deferred during the current epoch.
     current_deferred: Callbacks,
+    /// Callbacks that became eligible once the current epoch completes.
     previous_deferred: Callbacks,
 }
 
