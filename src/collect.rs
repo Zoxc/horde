@@ -246,10 +246,16 @@ static COLLECTOR: LazyLock<Mutex<Collector>> = LazyLock::new(|| Mutex::new(Colle
 
 type Callbacks = Vec<Box<dyn FnOnce() + Send>>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThreadState {
+    Quiet,
+    Busy,
+}
+
 struct Collector {
     pending: bool,
     busy_count: usize,
-    threads: HashMap<ThreadId, bool>,
+    threads: HashMap<ThreadId, ThreadState>,
     current_deferred: Callbacks,
     previous_deferred: Callbacks,
 }
@@ -267,12 +273,15 @@ impl Collector {
 
     fn register(&mut self) {
         self.busy_count += 1;
-        assert!(self.threads.insert(thread::current().id(), false).is_none());
+        assert!(self
+            .threads
+            .insert(thread::current().id(), ThreadState::Busy)
+            .is_none());
     }
 
     fn unregister(&mut self) {
-        let quiet = self.threads.remove(&thread::current().id()).unwrap();
-        if !quiet {
+        let state = self.threads.remove(&thread::current().id()).unwrap();
+        if state == ThreadState::Busy {
             self.busy_count -= 1;
 
             if self.busy_count == 0
@@ -299,11 +308,11 @@ impl Collector {
     }
 
     fn quiet(&mut self) -> Callbacks {
-        let quiet = self.threads.get_mut(&thread::current().id()).unwrap();
-        if !*quiet || self.pending {
-            if !*quiet {
+        let state = self.threads.get_mut(&thread::current().id()).unwrap();
+        if *state == ThreadState::Busy || self.pending {
+            if *state == ThreadState::Busy {
                 self.busy_count -= 1;
-                *quiet = true;
+                *state = ThreadState::Quiet;
             }
 
             if self.busy_count == 0 {
@@ -312,7 +321,7 @@ impl Collector {
 
                 self.busy_count = self.threads.len();
                 self.threads.values_mut().for_each(|value| {
-                    *value = false;
+                    *value = ThreadState::Busy;
                 });
 
                 let mut callbacks = mem::take(&mut self.previous_deferred);
