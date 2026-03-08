@@ -1,5 +1,31 @@
 use core::hash::{BuildHasher, Hash};
 
+#[inline]
+pub(crate) fn likely(value: bool) -> bool {
+    #[cfg(feature = "nightly")]
+    {
+        std::hint::likely(value)
+    }
+
+    #[cfg(not(feature = "nightly"))]
+    {
+        value
+    }
+}
+
+#[inline]
+pub(crate) fn unlikely(value: bool) -> bool {
+    #[cfg(feature = "nightly")]
+    {
+        std::hint::unlikely(value)
+    }
+
+    #[cfg(not(feature = "nightly"))]
+    {
+        value
+    }
+}
+
 #[inline(never)]
 #[cold]
 pub(crate) fn cold_path<F: FnOnce() -> R, R>(f: F) -> R {

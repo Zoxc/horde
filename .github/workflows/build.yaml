@@ -30,11 +30,20 @@ jobs:
     - name: Test
       run: cargo test --all-targets
 
+    - name: Test with all features
+      run: cargo test --all-targets --all-features
+
     - name: Miri
-      run: cargo miri test
+      run: cargo miri test --all-targets
+
+    - name: Miri with all features
+      run: cargo miri test --all-targets --all-features
 
     - name: Clippy
-      run: cargo clippy
+      run: cargo clippy --all-targets --all-features
+
+    - name: Clippy with all features
+      run: cargo clippy --all-targets --all-features
 
     - name: Format
       run: cargo fmt --all -- --check

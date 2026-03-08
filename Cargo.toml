@@ -13,6 +13,10 @@ publish = false
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+nightly = []
+
 [dependencies]
 parking_lot = "0.12.5"
 

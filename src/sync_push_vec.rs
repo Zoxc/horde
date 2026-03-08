@@ -3,14 +3,13 @@
 use crate::{
     collect::{self, Pin},
     scopeguard::guard,
-    util::align_up,
+    util::{align_up, unlikely},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, handle_alloc_error},
+    alloc::{Layout, alloc, dealloc, handle_alloc_error},
     cell::UnsafeCell,
-    hint::unlikely,
     iter::FromIterator,
     marker::PhantomData,
     mem,
@@ -144,10 +143,8 @@ impl<T> TableRef<T> {
 
         let (layout, info_offset) = Self::layout(capacity).expect("capacity overflow");
 
-        let ptr: NonNull<u8> = Global
-            .allocate(layout)
-            .map(|ptr| ptr.cast())
-            .unwrap_or_else(|_| handle_alloc_error(layout));
+        let ptr =
+            NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout));
 
         let info =
             unsafe { NonNull::new_unchecked(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
@@ -181,10 +178,7 @@ impl<T> TableRef<T> {
 
                 let (layout, info_offset) = Self::layout(capacity).unwrap_unchecked();
 
-                Global.deallocate(
-                    NonNull::new_unchecked((self.data.as_ptr() as *mut u8).sub(info_offset)),
-                    layout,
-                )
+                dealloc((self.data.as_ptr() as *mut u8).sub(info_offset), layout)
             }
         }
     }
@@ -308,7 +302,21 @@ impl<T> DestroyTable<T> {
     }
 }
 
+#[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            self.current().free();
+            for table in self.old.get_mut() {
+                table.run();
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<T> Drop for SyncPushVec<T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -593,11 +601,13 @@ impl<T: Clone + Send> Extend<T> for Write<'_, T> {
         });
     }
 
+    #[cfg(feature = "nightly")]
     #[inline]
     fn extend_one(&mut self, item: T) {
         self.push(item);
     }
 
+    #[cfg(feature = "nightly")]
     #[inline]
     fn extend_reserve(&mut self, additional: usize) {
         self.reserve(additional);

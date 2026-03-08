@@ -7,12 +7,14 @@
 //! Long-lived threads that stop interacting with lock-free structures should call [release] so
 //! they no longer delay reclamation.
 
-use crate::{scopeguard::guard, util::cold_path};
+use crate::{
+    scopeguard::guard,
+    util::{cold_path, unlikely},
+};
 use parking_lot::Mutex;
 use std::{
     cell::Cell,
     collections::HashMap,
-    hint::unlikely,
     marker::PhantomData,
     mem,
     panic::{self, AssertUnwindSafe},

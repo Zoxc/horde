@@ -6,16 +6,15 @@ use crate::{
     collect::{self, Pin, pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
-    util::{align_up, cold_path, make_insert_hash},
+    util::{align_up, cold_path, likely, make_insert_hash, unlikely},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, handle_alloc_error},
+    alloc::{Layout, alloc, dealloc, handle_alloc_error},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
-    hint::{likely, unlikely},
     iter::{FromIterator, FusedIterator},
     marker::PhantomData,
     mem,
@@ -445,10 +444,8 @@ impl<T> TableRef<T> {
     fn allocate(bucket_count: usize) -> Self {
         let (layout, info_offset) = Self::layout(bucket_count).expect("capacity overflow");
 
-        let ptr: NonNull<u8> = Global
-            .allocate(layout)
-            .map(|ptr| ptr.cast())
-            .unwrap_or_else(|_| handle_alloc_error(layout));
+        let ptr =
+            NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout));
 
         let info = unsafe { TableInfoRef::new(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
 
@@ -483,10 +480,7 @@ impl<T> TableRef<T> {
                     }
                 }
                 let (layout, info_offset) = Self::layout(self.info().buckets()).unwrap_unchecked();
-                Global.deallocate(
-                    NonNull::new_unchecked(self.info.as_ptr().cast::<u8>().sub(info_offset)),
-                    layout,
-                )
+                dealloc(self.info.as_ptr().cast::<u8>().sub(info_offset), layout)
             }
         }
     }
@@ -717,7 +711,21 @@ impl<T> DestroyTable<T> {
     }
 }
 
+#[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            self.current().free();
+            for table in self.old.get_mut() {
+                table.run();
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<K, V, S> Drop for SyncTable<K, V, S> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
