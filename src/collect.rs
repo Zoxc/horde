@@ -150,7 +150,7 @@ pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
         data.state.get(),
         State::Registered | State::Pinned
     )) {
-        cold_path(|| pin_cold());
+        pin_cold();
     }
 
     let old_state = data.state.get();
