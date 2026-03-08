@@ -291,3 +291,43 @@ fn concurrent_collect_stress() {
 
     assert_eq!(executed.load(Ordering::SeqCst), THREADS * ITERS);
 }
+
+#[test]
+fn collect_after_epoch_completion_without_new_defers_runs_pending_callbacks() {
+    let _test = enter_test();
+
+    let ready = Arc::new(Barrier::new(2));
+    let release_thread = Arc::new(Barrier::new(2));
+
+    let handle = {
+        let ready = ready.clone();
+        let release_thread = release_thread.clone();
+        thread::spawn(move || {
+            collect::pin(|_| ());
+            ready.wait();
+            release_thread.wait();
+            collect::release();
+        })
+    };
+
+    collect::pin(|_| ());
+    ready.wait();
+    collect::collect();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls2 = calls.clone();
+    unsafe {
+        collect::defer_unchecked(move || {
+            calls2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    collect::collect();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    release_thread.wait();
+    handle.join().unwrap();
+
+    collect::collect();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

@@ -319,10 +319,10 @@ impl Collector {
             self.busy_count -= 1;
 
             if self.busy_count == 0 {
-                self.complete_epoch();
+                self.complete_epoch(true);
             }
         } else if self.threads.is_empty() {
-            self.complete_epoch();
+            self.complete_epoch(true);
         }
     }
 
@@ -352,7 +352,8 @@ impl Collector {
         *state = ThreadState::Quiet;
 
         if self.busy_count == 0 {
-            self.complete_epoch();
+            // We pass `false` as we'll immediately take pending callbacks, so we don't need to signal them.
+            self.complete_epoch(false);
             callbacks.extend(mem::take(&mut self.pending));
 
             if !self.previous_deferred.is_empty() {
@@ -372,7 +373,7 @@ impl Collector {
         EVENTS.fetch_add(1, Ordering::Release);
     }
 
-    fn complete_epoch(&mut self) {
+    fn complete_epoch(&mut self, signal_pending: bool) {
         self.pending.extend(mem::take(&mut self.previous_deferred));
 
         if self.threads.is_empty() {
@@ -390,7 +391,7 @@ impl Collector {
         });
         self.previous_deferred = mem::take(&mut self.current_deferred);
 
-        if !self.previous_deferred.is_empty() {
+        if (signal_pending && !self.pending.is_empty()) || !self.previous_deferred.is_empty() {
             // Signal all threads to check in
             EVENTS.fetch_add(1, Ordering::Release);
         }
