@@ -58,8 +58,6 @@ where
         let f: Box<dyn FnOnce() + Send + 'static> = mem::transmute(f);
 
         COLLECTOR.lock().defer(f);
-
-        EVENTS.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -208,7 +206,7 @@ pub fn release() {
 ///
 /// This may collect garbage using the callbacks registered in [Pin::defer_unchecked](struct.Pin.html#method.defer_unchecked).
 ///
-/// This will panic if called while a thread is pinned or if called from a deferred callback.
+/// This may panic if called while a thread is pinned or if called from a deferred callback.
 pub fn collect() {
     let data = unsafe { &*(hide(data())) };
 
@@ -281,8 +279,8 @@ enum ThreadState {
 
 /// Global collector state shared by all participating threads.
 struct Collector {
-    /// Indicates that another collection pass should be attempted. Set when the last busy thread is unregistered.
-    pending: bool,
+    /// Callbacks that are ready to run on the next collection attempt.
+    pending: Callbacks,
     /// Number of registered threads still marked as [ThreadState::Busy].
     busy_count: usize,
     /// Per-thread participation state for the current epoch.
@@ -296,7 +294,7 @@ struct Collector {
 impl Collector {
     fn new() -> Self {
         Self {
-            pending: false,
+            pending: Vec::new(),
             busy_count: 0,
             threads: HashMap::new(),
             current_deferred: Vec::new(),
@@ -317,67 +315,81 @@ impl Collector {
         if state == ThreadState::Busy {
             self.busy_count -= 1;
 
-            if self.busy_count == 0
-                && (!self.previous_deferred.is_empty() || !self.current_deferred.is_empty())
-            {
-                // Don't collect garbage here, but let the other threads know that there's
-                // garbage to be collected.
-                self.pending = true;
-                EVENTS.fetch_add(1, Ordering::Release);
+            if self.busy_count == 0 {
+                self.complete_epoch();
             }
+        } else if self.threads.is_empty() {
+            self.complete_epoch();
         }
     }
 
     fn collect_unregistered(&mut self) -> Callbacks {
         debug_assert!(!self.threads.contains_key(&thread::current().id()));
 
+        let mut callbacks = mem::take(&mut self.pending);
+
         if self.threads.is_empty() {
-            let mut callbacks = mem::take(&mut self.previous_deferred);
+            callbacks.extend(mem::take(&mut self.previous_deferred));
             callbacks.extend(mem::take(&mut self.current_deferred));
-            callbacks
-        } else {
-            Vec::new()
         }
+
+        callbacks
     }
 
     fn quiet(&mut self) -> Callbacks {
         let state = self.threads.get_mut(&thread::current().id()).unwrap();
-        if *state == ThreadState::Busy || self.pending {
-            if *state == ThreadState::Busy {
-                self.busy_count -= 1;
-                *state = ThreadState::Quiet;
-            }
 
-            if self.busy_count == 0 {
-                // All threads are quiet
-                self.pending = false;
+        let mut callbacks = mem::take(&mut self.pending);
 
-                self.busy_count = self.threads.len();
-                self.threads.values_mut().for_each(|value| {
-                    *value = ThreadState::Busy;
-                });
-
-                let mut callbacks = mem::take(&mut self.previous_deferred);
-                self.previous_deferred = mem::take(&mut self.current_deferred);
-
-                if !self.previous_deferred.is_empty() {
-                    // Mark ourselves as quiet again
-                    callbacks.extend(self.quiet());
-
-                    // Signal other threads to check in
-                    EVENTS.fetch_add(1, Ordering::Release);
-                }
-
-                callbacks
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
+        if *state != ThreadState::Busy {
+            return callbacks;
         }
+
+        self.busy_count -= 1;
+        *state = ThreadState::Quiet;
+
+        if self.busy_count == 0 {
+            self.complete_epoch();
+            callbacks.extend(mem::take(&mut self.pending));
+
+            if !self.previous_deferred.is_empty() {
+                // We immediately call `quiet` so we will be up to date with the new epoch
+                DATA.with(|data| data.seen_events.set(EVENTS.load(Ordering::Relaxed)));
+
+                // Mark ourselves as quiet again
+                callbacks.extend(self.quiet());
+            }
+        }
+
+        callbacks
     }
 
     fn defer(&mut self, callback: Box<dyn FnOnce() + Send>) {
         self.current_deferred.push(callback);
+        EVENTS.fetch_add(1, Ordering::Release);
+    }
+
+    fn complete_epoch(&mut self) {
+        self.pending.extend(mem::take(&mut self.previous_deferred));
+
+        if self.threads.is_empty() {
+            self.pending.extend(mem::take(&mut self.current_deferred));
+            if !self.pending.is_empty() {
+                // Signal future threads to check in
+                EVENTS.fetch_add(1, Ordering::Release);
+            }
+            return;
+        }
+
+        self.busy_count = self.threads.len();
+        self.threads.values_mut().for_each(|value| {
+            *value = ThreadState::Busy;
+        });
+        self.previous_deferred = mem::take(&mut self.current_deferred);
+
+        if !self.previous_deferred.is_empty() {
+            // Signal all threads to check in
+            EVENTS.fetch_add(1, Ordering::Release);
+        }
     }
 }

@@ -108,6 +108,72 @@ fn collects_after_busy_thread_releases() {
 }
 
 #[test]
+fn collects_after_last_quiet_thread_releases() {
+    let _test = enter_test();
+
+    let ready = Arc::new(Barrier::new(3));
+    let quiet_done = Arc::new(Barrier::new(3));
+    let release_busy = Arc::new(Barrier::new(2));
+    let release_quiet = Arc::new(Barrier::new(2));
+
+    let quiet = {
+        let ready = ready.clone();
+        let quiet_done = quiet_done.clone();
+        let release_quiet = release_quiet.clone();
+
+        thread::spawn(move || {
+            collect::pin(|_| ());
+            ready.wait();
+            collect::collect();
+            quiet_done.wait();
+            release_quiet.wait();
+            collect::release();
+        })
+    };
+
+    let busy = {
+        let ready = ready.clone();
+        let quiet_done = quiet_done.clone();
+        let release_busy = release_busy.clone();
+
+        thread::spawn(move || {
+            collect::pin(|_| ());
+            ready.wait();
+            quiet_done.wait();
+            release_busy.wait();
+            collect::release();
+        })
+    };
+
+    ready.wait();
+    quiet_done.wait();
+
+    let free = Arc::new(AtomicUsize::new(0));
+    let free2 = free.clone();
+    unsafe {
+        collect::defer_unchecked(move || {
+            free2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    collect::collect();
+    assert_eq!(free.load(Ordering::SeqCst), 0);
+
+    release_busy.wait();
+    busy.join().unwrap();
+
+    collect::collect();
+    assert_eq!(free.load(Ordering::SeqCst), 0);
+
+    release_quiet.wait();
+    quiet.join().unwrap();
+
+    collect::collect();
+
+    assert_eq!(free.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 #[should_panic(expected = "Cannot call `collect` while pinned")]
 fn collect_panics_while_pinned_without_events() {
     let _test = enter_test();
