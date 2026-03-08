@@ -40,6 +40,16 @@ fn test_low_align_iteration_with_padding_before_info() {
 }
 
 #[test]
+fn test_low_align_replace_and_expand_keep_values() {
+    let mut m = SyncPushVec::<u8>::with_capacity(3);
+    m.write().replace(vec![1, 2, 3], 3);
+    assert_eq!(m.write().read().as_slice(), [1, 2, 3]);
+
+    m.write().push(4);
+    assert_eq!(m.write().read().as_slice(), [1, 2, 3, 4]);
+}
+
+#[test]
 fn test_insert() {
     let m = SyncPushVec::new();
     assert_eq!(m.lock().read().len(), 0);
