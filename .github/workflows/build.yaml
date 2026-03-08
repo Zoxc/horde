@@ -27,14 +27,14 @@ jobs:
         override: true
         components: rustfmt, miri, clippy
 
-    - name: Format
-      run: cargo fmt --all -- --check
-
-    - name: Clippy
-      run: cargo clippy
-
     - name: Test
       run: cargo test --all-targets
 
     - name: Miri
       run: cargo miri test
+
+    - name: Clippy
+      run: cargo clippy
+
+    - name: Format
+      run: cargo fmt --all -- --check
