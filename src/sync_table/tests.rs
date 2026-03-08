@@ -384,7 +384,7 @@ fn intern_potential() {
         let mut write = table.lock();
         match p.get(write.read(), &k, Some(hash)) {
             Some(v) => {
-                v.1;
+                let _ = v.1;
                 true
             }
             None => {
@@ -401,10 +401,9 @@ fn intern_potential() {
 fn intern_get_insert() {
     fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
         let hash = table.hash_key(&k);
-        match table.read(pin).get(&k, Some(hash)) {
-            Some(_) => return true,
-            None => (),
-        };
+        if table.read(pin).get(&k, Some(hash)).is_some() {
+            return true;
+        }
 
         let mut write = table.lock();
         match write.read().get(&k, Some(hash)) {

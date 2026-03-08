@@ -8,15 +8,7 @@ fn test_iter() {
     let mut m = SyncPushVec::new();
     m.write().push(1);
     m.write().push(2);
-    assert_eq!(
-        m.write()
-            .read()
-            .as_slice()
-            .iter()
-            .copied()
-            .collect::<Vec<i32>>(),
-        vec![1, 2]
-    );
+    assert_eq!(m.write().read().as_slice().to_vec(), vec![1, 2]);
 }
 
 #[test]
@@ -67,9 +59,9 @@ fn test_replace() {
     m.lock().push(2);
     m.lock().push(5);
     assert_eq!(m.lock().read().as_slice(), [2, 5]);
-    m.lock().replace(vec![3].into_iter(), 0);
+    m.lock().replace(vec![3], 0);
     assert_eq!(m.lock().read().as_slice(), [3]);
-    m.lock().replace(vec![].into_iter(), 0);
+    m.lock().replace(vec![], 0);
     assert_eq!(m.lock().read().as_slice(), []);
     release();
 }

@@ -30,10 +30,9 @@ fn intern_map() -> SyncTable<u64, u64> {
 #[inline(never)]
 fn intern3_value(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_key(&k);
-    match table.read(pin).get(&k, Some(hash)) {
-        Some(v) => return *v.1,
-        None => (),
-    };
+    if let Some(v) = table.read(pin).get(&k, Some(hash)) {
+        return *v.1;
+    }
 
     let mut write = table.lock();
     match write.read().get(&k, Some(hash)) {

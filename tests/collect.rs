@@ -49,7 +49,7 @@ fn free_single_thread() {
         });
     }
     collect::collect();
-    assert_eq!(*free.lock().unwrap(), true);
+    assert!(*free.lock().unwrap());
 
     // Test registered free
     collect::pin(|_| ());
@@ -61,7 +61,7 @@ fn free_single_thread() {
         });
     }
     collect::collect();
-    assert_eq!(*free.lock().unwrap(), true);
+    assert!(*free.lock().unwrap());
 }
 
 #[test]
