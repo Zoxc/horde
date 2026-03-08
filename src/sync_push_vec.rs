@@ -3,11 +3,12 @@
 use crate::{
     collect::{self, Pin},
     scopeguard::guard,
+    util::align_up,
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
+    alloc::{Allocator, Global, Layout, handle_alloc_error},
     cell::UnsafeCell,
     hint::unlikely,
     iter::FromIterator,
@@ -128,10 +129,13 @@ impl<T> TableRef<T> {
     }
 
     #[inline]
-    fn layout(capacity: usize) -> Result<(Layout, usize), LayoutError> {
-        let data = Layout::new::<T>().repeat(capacity)?.0;
-        let info = Layout::new::<TableInfo>();
-        data.extend(info)
+    fn layout(capacity: usize) -> Option<(Layout, usize)> {
+        let data_size = mem::size_of::<T>().checked_mul(capacity)?;
+        let info_offset = align_up(data_size, mem::align_of::<TableInfo>());
+        let size = info_offset.checked_add(mem::size_of::<TableInfo>())?;
+        let align = mem::align_of::<T>().max(mem::align_of::<TableInfo>());
+        let layout = Layout::from_size_align(size, align).ok()?;
+        Some((layout, info_offset))
     }
 
     #[inline]

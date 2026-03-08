@@ -6,12 +6,12 @@ use crate::{
     collect::{self, Pin, pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
-    util::{cold_path, make_insert_hash},
+    util::{align_up, cold_path, make_insert_hash},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Allocator, Global, Layout, LayoutError, handle_alloc_error},
+    alloc::{Allocator, Global, Layout, handle_alloc_error},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
@@ -270,9 +270,7 @@ impl TableInfoRef {
         unsafe {
             debug_assert!(index < self.info().num_ctrl_bytes());
 
-            let info = Layout::new::<TableInfo>();
-            let control = Layout::new::<Group>();
-            let offset = info.extend(control).unwrap().1;
+            let offset = align_up(mem::size_of::<TableInfo>(), mem::align_of::<Group>());
 
             let ctrl = self.as_ptr().cast::<u8>().add(offset);
 
@@ -423,13 +421,24 @@ impl<T> TableRef<T> {
     }
 
     #[inline]
-    fn layout(bucket_count: usize) -> Result<(Layout, usize), LayoutError> {
-        let buckets = Layout::new::<T>().repeat(bucket_count)?.0;
-        let info = Layout::new::<TableInfo>();
-        let control =
-            Layout::array::<u8>(bucket_count + Group::WIDTH)?.align_to(mem::align_of::<Group>())?;
-        let (total, info_offset) = buckets.extend(info)?;
-        Ok((total.extend(control)?.0, info_offset))
+    fn layout(bucket_count: usize) -> Option<(Layout, usize)> {
+        let buckets_size = mem::size_of::<T>().checked_mul(bucket_count)?;
+
+        // Align TableInfo to Group so there's a fixed offset for use in `TableInfoRef::ctrl
+        let info_offset = align_up(
+            buckets_size,
+            mem::align_of::<TableInfo>().max(mem::align_of::<Group>()),
+        );
+
+        let after_info = info_offset.checked_add(mem::size_of::<TableInfo>())?;
+        let ctrl_offset = align_up(after_info, mem::align_of::<Group>());
+        let ctrl_size = bucket_count.checked_add(Group::WIDTH)?;
+        let size = ctrl_offset.checked_add(ctrl_size)?;
+        let align = mem::align_of::<T>()
+            .max(mem::align_of::<TableInfo>())
+            .max(mem::align_of::<Group>());
+        let layout = Layout::from_size_align(size, align).ok()?;
+        Some((layout, info_offset))
     }
 
     #[inline]
@@ -473,12 +482,10 @@ impl<T> TableRef<T> {
                         item.drop();
                     }
                 }
-
-                // TODO: Document why we don't need to account for padding when adjusting
-                // the pointer. Sizes allowed can't result in padding?
+                let (layout, info_offset) = Self::layout(self.info().buckets()).unwrap_unchecked();
                 Global.deallocate(
-                    NonNull::new_unchecked(self.bucket_before_first() as *mut u8),
-                    Self::layout(self.info().buckets()).unwrap_unchecked().0,
+                    NonNull::new_unchecked(self.info.as_ptr().cast::<u8>().sub(info_offset)),
+                    layout,
                 )
             }
         }
@@ -556,11 +563,6 @@ impl<T> TableRef<T> {
 
     unsafe fn info_mut(&mut self) -> &mut TableInfo {
         unsafe { self.info.info_mut() }
-    }
-
-    #[inline]
-    unsafe fn bucket_before_first(&self) -> *mut T {
-        unsafe { self.bucket_past_last().sub(self.info().buckets()) }
     }
 
     #[inline]

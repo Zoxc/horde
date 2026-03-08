@@ -28,6 +28,24 @@ fn high_align() {
 }
 
 #[test]
+fn low_align_with_padding_before_table_info() {
+    let m = SyncTable::<u8, ()>::new();
+
+    assert!(m.lock().insert(1, (), None));
+    assert!(m.lock().insert(2, (), None));
+    assert!(m.lock().insert(3, (), None));
+
+    let write = m.lock();
+    let read = write.read();
+    assert!(read.get(&1, None).is_some());
+    assert!(read.get(&2, None).is_some());
+    assert!(read.get(&3, None).is_some());
+    assert_eq!(read.iter().count(), 3);
+
+    release();
+}
+
+#[test]
 fn test_create_capacity_zero() {
     let m = SyncTable::new_with(RandomState::new(), 0);
 
