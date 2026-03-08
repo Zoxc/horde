@@ -22,3 +22,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(code)'] }
 [profile.bench]
 debug = 0
 codegen-units = 1
+
+[profile.release]
+codegen-units = 1
