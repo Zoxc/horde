@@ -1,10 +1,12 @@
-use horde::collect;
+#![cfg(test)]
+
+use crate::collect;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
