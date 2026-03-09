@@ -2,4 +2,4 @@ Use `cargo rustc --release -- --cfg code` to generate code examples for inspecti
 
 Use `cargo miri test --target x86_64-unknown-linux-gnu` to run Miri on non-Linux targets.
 
-Run `cargo fuzz run sync_table` in `fuzz` folder to start fuzzing. Uses it https://github.com/rust-fuzz/cargo-fuzz
+Run `cargo fuzz run sync_table` or `cargo fuzz run sync_table_concurrent` in `fuzz` folder to start fuzzing. Uses it https://github.com/rust-fuzz/cargo-fuzz
