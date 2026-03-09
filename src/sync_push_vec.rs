@@ -191,7 +191,11 @@ impl<T> TableRef<T> {
         capacity: usize,
     ) -> TableRef<T> {
         if iter_size == 0 {
-            TableRef::empty()
+            if capacity > 0 {
+                TableRef::allocate(capacity)
+            } else {
+                TableRef::empty()
+            }
         } else {
             let capacity = cmp::max(iter_size, capacity);
             unsafe { TableRef::from_iter::<_, CHECK_LEN>(iter, capacity) }

@@ -77,6 +77,15 @@ fn test_replace() {
 }
 
 #[test]
+fn test_replace_empty_preserves_requested_capacity() {
+    let m = SyncPushVec::new();
+    m.lock().replace(Vec::<i32>::new(), 8);
+    assert_eq!(m.lock().read().as_slice(), []);
+    assert_eq!(m.lock().read().capacity(), 8);
+    release();
+}
+
+#[test]
 fn test_expand() {
     let m = SyncPushVec::new();
 
