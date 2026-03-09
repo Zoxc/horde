@@ -8,7 +8,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Layout, alloc, dealloc, handle_alloc_error},
+    alloc::{alloc, dealloc, handle_alloc_error, Layout},
     cell::UnsafeCell,
     iter::FromIterator,
     marker::PhantomData,
@@ -19,7 +19,7 @@ use std::{
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{Arc, Weak, atomic::AtomicUsize},
+    sync::{atomic::AtomicUsize, Arc, Weak},
 };
 
 mod code;
@@ -129,6 +129,8 @@ impl<T> TableRef<T> {
 
     #[inline]
     fn layout(capacity: usize) -> Option<(Layout, usize)> {
+        // There can be padding at the start of the layout if the alignment of `T` is smaller than `TableInfo`.
+        // Elements are accessed relatively from the start of `TableInfo` and not from the start of the layout.
         let data_size = mem::size_of::<T>().checked_mul(capacity)?;
         let info_offset = align_up(data_size, mem::align_of::<TableInfo>());
         let size = info_offset.checked_add(mem::size_of::<TableInfo>())?;

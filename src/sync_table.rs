@@ -3,7 +3,7 @@
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{self, Pin, pin},
+    collect::{self, pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{align_up, cold_path, likely, make_insert_hash, unlikely},
@@ -11,7 +11,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Layout, alloc, dealloc, handle_alloc_error},
+    alloc::{alloc, dealloc, handle_alloc_error, Layout},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
@@ -421,6 +421,8 @@ impl<T> TableRef<T> {
 
     #[inline]
     fn layout(bucket_count: usize) -> Option<(Layout, usize)> {
+        // There can be padding at the start of the layout if the alignment of `T` is smaller than `TableInfo`.
+        // Buckets are accessed relatively from the start of `TableInfo` and not from the start of the layout.
         let buckets_size = mem::size_of::<T>().checked_mul(bucket_count)?;
 
         // Align TableInfo to Group so there's a fixed offset for use in `TableInfoRef::ctrl
@@ -1521,7 +1523,11 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
-        if cap < 4 { 4 } else { 8 }
+        if cap < 4 {
+            4
+        } else {
+            8
+        }
     } else {
         // Otherwise require 1/8 buckets to be empty (87.5% load)
         //
