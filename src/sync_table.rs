@@ -1700,11 +1700,12 @@ impl<T> FusedIterator for RawIterRange<T> {}
 #[inline]
 pub fn shard_index_by_hash(hash: u64, shards: usize) -> usize {
     assert!(shards.is_power_of_two());
-    let shard_bits = shards - 1;
+    let shard_bits = shards.trailing_zeros() as usize;
 
-    let hash_len = mem::size_of::<usize>();
-    // Ignore the top 7 bits as hashbrown uses these and get the next SHARD_BITS highest bits.
+    let hash_len_bits = mem::size_of_val(&hash) * 8;
+    // Ignore the top 7 bits as we use these for bucket hashes and get the next `shard_bits` highest bits.
     // hashbrown also uses the lowest bits, so we can't use those
-    let bits = (hash >> (hash_len * 8 - 7 - shard_bits)) as usize;
-    bits % shards
+    let shift = (hash_len_bits - 7).saturating_sub(shard_bits);
+    let bits = (hash >> shift) as usize;
+    bits & (shards - 1)
 }
