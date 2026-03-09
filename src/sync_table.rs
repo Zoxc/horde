@@ -3,7 +3,7 @@
 //! It is based on the table from the `hashbrown` crate.
 
 use crate::{
-    collect::{self, Pin, pin},
+    collect::{self, pin, Pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{align_up, cold_path, likely, make_insert_hash, unlikely},
@@ -11,7 +11,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{Layout, alloc, dealloc, handle_alloc_error},
+    alloc::{alloc, dealloc, handle_alloc_error, Layout},
     cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
@@ -1074,6 +1074,9 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
 
 impl<'a, K: Send, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Removes an element from the table, and returns a reference to it if was present.
+    ///
+    /// The element will only be dropped after the internal table currently in use is replaced
+    /// for example by `replace` or due to expansion.
     #[inline]
     pub fn remove<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&K, &V)>
     where
@@ -1523,7 +1526,11 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
-        if cap < 4 { 4 } else { 8 }
+        if cap < 4 {
+            4
+        } else {
+            8
+        }
     } else {
         // Otherwise require 1/8 buckets to be empty (87.5% load)
         //
