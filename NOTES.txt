@@ -1,1 +1,3 @@
 Use `cargo rustc --release -- --cfg code` to generate code examples for inspection.
+
+Use `cargo miri test --target x86_64-unknown-linux-gnu` to run Miri on non-Linux targets.
