@@ -1,5 +1,5 @@
-use super::EMPTY;
 use super::bitmask::BitMask;
+use super::EMPTY;
 use core::arch::asm;
 use core::mem;
 
@@ -47,7 +47,9 @@ impl Group {
     #[inline]
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
-            // Use assembly to load individual atomic bytes with acquire ordering
+            // Use assembly to load individual atomic bytes with acquire ordering.
+            // These loads can shear, but we only care about coherent individual bytes.
+            // We use this instead of individual atomic byte loads to improve performance.
             let result;
             asm!(
                 "movdqu {result}, xmmword ptr [{ptr}]",
@@ -68,7 +70,9 @@ impl Group {
             // FIXME: use is_aligned_to once it stabilizes
             debug_assert_eq!(ptr.align_offset(mem::align_of::<Self>()), 0);
 
-            // Use assembly to load individual atomic bytes with acquire ordering
+            // Use assembly to load individual atomic bytes with acquire ordering.
+            // These loads can shear, but we only care about coherent individual bytes.
+            // We use this instead of individual atomic byte loads to improve performance.
             let result;
             asm!(
                 "movdqa {result}, xmmword ptr [{ptr}]",
