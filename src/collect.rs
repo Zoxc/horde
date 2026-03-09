@@ -18,8 +18,8 @@ use std::{
     marker::PhantomData,
     mem,
     panic::{self, AssertUnwindSafe},
-    sync::LazyLock,
     sync::atomic::{AtomicUsize, Ordering},
+    sync::LazyLock,
     thread::{self, ThreadId},
 };
 
@@ -221,8 +221,10 @@ pub fn collect() {
 
     let new = EVENTS.load(Ordering::Acquire);
     if unlikely(new != data.seen_events.get()) {
-        data.seen_events.set(new);
         collect_cold();
+        // Update seen events after `collect_cold` in case its state check panics.
+        // This allows future `collect` to continue if we resume execution after the panic.
+        data.seen_events.set(new);
     }
 }
 
@@ -309,11 +311,10 @@ impl Collector {
 
     fn register(&mut self) {
         self.busy_count += 1;
-        assert!(
-            self.threads
-                .insert(thread::current().id(), ThreadState::Busy)
-                .is_none()
-        );
+        assert!(self
+            .threads
+            .insert(thread::current().id(), ThreadState::Busy)
+            .is_none());
     }
 
     fn unregister(&mut self) {

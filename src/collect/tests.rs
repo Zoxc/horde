@@ -1,12 +1,12 @@
 #![cfg(test)]
 
 use crate::collect;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -195,6 +195,29 @@ fn nested_pin_restores_outer_pinned_state() {
     });
 
     assert!(result.is_err());
+}
+
+#[test]
+fn invalid_collect_does_not_consume_pending_event() {
+    let _test = enter_test();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls2 = calls.clone();
+
+    unsafe {
+        collect::defer_unchecked(move || {
+            calls2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    let result = std::panic::catch_unwind(|| {
+        collect::pin(|_| collect::collect());
+    });
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    collect::collect();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
