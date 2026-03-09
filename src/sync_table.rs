@@ -1046,7 +1046,7 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
                 SyncTable {
                     hash_builder: self.hash_builder.clone(),
                     current: AtomicPtr::new(
-                        if buckets > 0 {
+                        if table.info().bucket_mask > 0 {
                             table.clone_table(&self.hash_builder, buckets, hasher)
                         } else {
                             TableRef::empty()

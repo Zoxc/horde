@@ -61,6 +61,16 @@ fn test_create_capacity_zero() {
 }
 
 #[test]
+fn clone_empty_reuses_static_table() {
+    let m = SyncTable::<i32, i32>::new();
+    let cloned = m.clone();
+
+    assert_eq!(m.current().info.as_ptr(), cloned.current().info.as_ptr());
+
+    release();
+}
+
+#[test]
 fn test_replace() {
     let m = SyncTable::new();
     m.lock().insert(2, 7, None);
