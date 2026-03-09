@@ -216,6 +216,8 @@ pub fn collect() {
     let data = unsafe { &*(hide(data())) };
 
     if cfg!(debug_assertions) {
+        // We check this only with `debug_assertions` to improve performance.
+        // A proper check is done in `collect_cold` if there's new events.
         assert_collect_state(data);
     }
 
