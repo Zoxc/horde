@@ -2,6 +2,7 @@
 
 use super::SyncTable;
 use crate::collect::Pin;
+use crate::collect::enter_test;
 use crate::collect::pin;
 use crate::collect::release;
 use std::collections::hash_map::RandomState;
@@ -90,6 +91,8 @@ fn test_remove() {
 
 #[test]
 fn remove_drops_values_after_reclamation() {
+    let _test = enter_test();
+
     #[derive(Clone)]
     struct DropCounter(Arc<AtomicUsize>);
 

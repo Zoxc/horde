@@ -18,13 +18,15 @@ use std::{
     marker::PhantomData,
     mem,
     panic::{self, AssertUnwindSafe},
-    sync::atomic::{AtomicUsize, Ordering},
     sync::LazyLock,
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{self, ThreadId},
 };
 
 mod code;
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::enter_test;
 
 /// Monotonic event counter used to notify threads that reclamation state changed.
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
@@ -307,10 +309,11 @@ impl Collector {
 
     fn register(&mut self) {
         self.busy_count += 1;
-        assert!(self
-            .threads
-            .insert(thread::current().id(), ThreadState::Busy)
-            .is_none());
+        assert!(
+            self.threads
+                .insert(thread::current().id(), ThreadState::Busy)
+                .is_none()
+        );
     }
 
     fn unregister(&mut self) {

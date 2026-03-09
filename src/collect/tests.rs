@@ -1,12 +1,12 @@
 #![cfg(test)]
 
 use crate::collect;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -15,7 +15,7 @@ fn test_lock() -> MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-struct TestGuard {
+pub(crate) struct TestGuard {
     _lock: MutexGuard<'static, ()>,
 }
 
@@ -28,7 +28,7 @@ impl Drop for TestGuard {
     }
 }
 
-fn enter_test() -> TestGuard {
+pub(crate) fn enter_test() -> TestGuard {
     let lock = test_lock();
     collect::release();
     for _ in 0..4 {

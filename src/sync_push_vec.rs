@@ -8,7 +8,7 @@ use crate::{
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
-    alloc::{alloc, dealloc, handle_alloc_error, Layout},
+    alloc::{Layout, alloc, dealloc, handle_alloc_error},
     cell::UnsafeCell,
     iter::FromIterator,
     marker::PhantomData,
@@ -19,7 +19,7 @@ use std::{
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{atomic::AtomicUsize, Arc, Weak},
+    sync::{Arc, Weak, atomic::AtomicUsize},
 };
 
 mod code;
