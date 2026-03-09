@@ -226,9 +226,6 @@ pub fn collect() {
     let new = EVENTS.load(Ordering::Acquire);
     if unlikely(new != data.seen_events.get()) {
         collect_cold();
-        // Update seen events after `collect_cold` in case its state check panics.
-        // This allows future `collect` to continue if we resume execution after the panic.
-        data.seen_events.set(new);
     }
 }
 
@@ -245,6 +242,10 @@ fn assert_collect_state(data: &Data) {
 fn collect_cold() {
     let data = unsafe { &*(hide(data())) };
     assert_collect_state(data);
+
+    // Update seen events after `assert_collect_state` in it panics.
+    // This allows future `collect` to continue if we resume execution after the panic.
+    data.seen_events.set(EVENTS.load(Ordering::Relaxed));
 
     let old_state = data.state.get();
     let _guard = guard(old_state, |state| data.state.set(*state));
