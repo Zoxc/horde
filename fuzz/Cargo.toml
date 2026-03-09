@@ -1,0 +1,24 @@
+[package]
+name = "horde-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.horde]
+path = ".."
+
+[[bin]]
+name = "sync_table"
+path = "fuzz_targets/sync_table.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
