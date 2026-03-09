@@ -221,6 +221,8 @@ pub fn collect() {
         assert_collect_state(data);
     }
 
+    // `EVENTS` can wrap around causing us to miss an event.
+    // That is unlikely and will just delay reclamation until another event is triggered.
     let new = EVENTS.load(Ordering::Acquire);
     if unlikely(new != data.seen_events.get()) {
         collect_cold();
