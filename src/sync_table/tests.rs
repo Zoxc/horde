@@ -77,6 +77,20 @@ fn test_replace() {
 }
 
 #[test]
+fn replace_empty_preserves_requested_capacity() {
+    let m = SyncTable::<i32, i32>::new();
+
+    m.lock().replace(Vec::new(), 100);
+
+    pin(|pin| {
+        assert_eq!(m.read(pin).len(), 0);
+        assert!(m.read(pin).capacity() >= 100);
+    });
+
+    release();
+}
+
+#[test]
 fn test_remove() {
     let m = SyncTable::new();
     m.lock().insert(2, 7, None);

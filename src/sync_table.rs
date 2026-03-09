@@ -502,7 +502,12 @@ impl<T> TableRef<T> {
         hasher: H,
     ) -> TableRef<T> {
         if iter_size == 0 {
-            TableRef::empty()
+            if capacity > 0 {
+                let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
+                TableRef::allocate(buckets)
+            } else {
+                TableRef::empty()
+            }
         } else {
             let buckets =
                 capacity_to_buckets(cmp::max(iter_size, capacity)).expect("capacity overflow");
