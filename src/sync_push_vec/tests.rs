@@ -1,10 +1,12 @@
 #![cfg(test)]
 
+use crate::collect::enter_test;
 use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 
 #[test]
 fn test_iter() {
+    let _test = enter_test();
     let mut m = SyncPushVec::new();
     m.write().push(1);
     m.write().push(2);
@@ -13,6 +15,7 @@ fn test_iter() {
 
 #[test]
 fn test_high_align() {
+    let _test = enter_test();
     #[repr(align(128))]
     #[allow(dead_code)]
     #[derive(Clone)]
@@ -25,12 +28,14 @@ fn test_high_align() {
 
 #[test]
 fn test_low_align() {
+    let _test = enter_test();
     let mut m = SyncPushVec::<u8>::with_capacity(1);
     m.write().push(1);
 }
 
 #[test]
 fn test_low_align_iteration_with_padding_before_info() {
+    let _test = enter_test();
     let mut m = SyncPushVec::<u8>::with_capacity(3);
     m.write().push(1);
     m.write().push(2);
@@ -41,6 +46,7 @@ fn test_low_align_iteration_with_padding_before_info() {
 
 #[test]
 fn test_low_align_replace_and_expand_keep_values() {
+    let _test = enter_test();
     let mut m = SyncPushVec::<u8>::with_capacity(3);
     m.write().replace(vec![1, 2, 3], 3);
     assert_eq!(m.write().read().as_slice(), [1, 2, 3]);
@@ -51,6 +57,7 @@ fn test_low_align_replace_and_expand_keep_values() {
 
 #[test]
 fn test_insert() {
+    let _test = enter_test();
     let m = SyncPushVec::new();
     assert_eq!(m.lock().read().len(), 0);
     m.lock().push(2);
@@ -65,6 +72,7 @@ fn test_insert() {
 
 #[test]
 fn test_replace() {
+    let _test = enter_test();
     let m = SyncPushVec::new();
     m.lock().push(2);
     m.lock().push(5);
@@ -78,6 +86,7 @@ fn test_replace() {
 
 #[test]
 fn test_replace_empty_preserves_requested_capacity() {
+    let _test = enter_test();
     let m = SyncPushVec::new();
     m.lock().replace(Vec::<i32>::new(), 8);
     assert_eq!(m.lock().read().as_slice(), []);
@@ -87,6 +96,7 @@ fn test_replace_empty_preserves_requested_capacity() {
 
 #[test]
 fn test_expand() {
+    let _test = enter_test();
     let m = SyncPushVec::new();
 
     assert_eq!(m.lock().read().len(), 0);
