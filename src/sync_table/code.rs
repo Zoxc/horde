@@ -18,11 +18,6 @@ unsafe fn ctrl_index(t: TableRef<(usize, usize)>, i: usize) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-unsafe fn first_bucket(t: TableRef<(usize, usize)>) -> *mut (usize, usize) {
-    unsafe { t.bucket_before_first() }
-}
-
-#[unsafe(no_mangle)]
 unsafe fn last_bucket(t: TableRef<(usize, usize)>) -> *mut (usize, usize) {
     unsafe { t.bucket_past_last() }
 }
