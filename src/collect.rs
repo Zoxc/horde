@@ -128,26 +128,30 @@ cfg_if! {
     ))] {
         #[inline]
         #[allow(clippy::pointers_in_nomem_asm_block)]
-        fn hide(mut data: *const Data) -> *const Data {
+        fn hide(data: &Data) -> &Data {
+            let mut data = data as *const Data;
             use std::arch::asm;
             // Hide the `data` value from LLVM to prevent it from generating multiple TLS accesses
             unsafe {
                 asm!("/* {} */", inout(reg) data, options(pure, nomem, nostack, preserves_flags));
-            }
 
-            data
+                &*data
+            }
         }
     } else {
         #[inline]
-        fn hide(data: *const Data) -> *const Data {
+        fn hide(data: &Data) -> &Data {
             data
         }
     }
 }
 
-/// Returns the address of the current thread's collector state.
-fn data() -> *const Data {
-    DATA.with(|data| data as *const Data)
+/// Call a closure with a reference to the current thread's collector state.
+///
+/// This hides the TLS access behind `hide` internally.
+#[inline(always)]
+fn data<R>(f: impl FnOnce(&Data) -> R) -> R {
+    DATA.with(|data| f(hide(data)))
 }
 
 /// Marks the current thread as pinned and returns a proof of that to the closure.
@@ -161,29 +165,27 @@ fn data() -> *const Data {
 /// This will panic if called from a deferred callback.
 #[inline]
 pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
-    let data = unsafe { &*(hide(data())) };
+    data(|data| {
+        if unlikely(!matches!(
+            data.state.get(),
+            State::Registered | State::Pinned
+        )) {
+            pin_cold();
+        }
 
-    if unlikely(!matches!(
-        data.state.get(),
-        State::Registered | State::Pinned
-    )) {
-        pin_cold();
-    }
-
-    let old_state = data.state.get();
-    data.state.set(State::Pinned);
-    let _guard = guard(old_state, |state| data.state.set(*state));
-    f(Pin {
-        _private: PhantomData,
+        let old_state = data.state.get();
+        data.state.set(State::Pinned);
+        let _guard = guard(old_state, |state| data.state.set(*state));
+        f(Pin {
+            _private: PhantomData,
+        })
     })
 }
 
 #[inline(never)]
 #[cold]
 fn pin_cold() {
-    let data = unsafe { &*(hide(data())) };
-
-    match data.state.get() {
+    data(|data| match data.state.get() {
         State::Unregistered => {
             EXIT_GUARD.with(|_| ());
             COLLECTOR.lock().register();
@@ -191,7 +193,7 @@ fn pin_cold() {
         }
         State::Registered | State::Pinned => unreachable!(),
         State::Collecting => cold_path(|| panic!("Deferred callbacks cannot call `pin`")),
-    }
+    })
 }
 
 /// Removes the current thread from the threads allowed to access lock-free data structures.
@@ -206,9 +208,7 @@ fn pin_cold() {
 ///
 /// This will panic if called while the current thread is pinned or during a deferred callback.
 pub fn release() {
-    let data = unsafe { &*(hide(data())) };
-
-    match data.state.get() {
+    data(|data| match data.state.get() {
         State::Unregistered => (),
         State::Registered => {
             data.state.set(State::Unregistered);
@@ -216,7 +216,7 @@ pub fn release() {
         }
         State::Pinned => cold_path(|| panic!("Cannot call `release` while pinned")),
         State::Collecting => cold_path(|| panic!("Deferred callbacks cannot call `release`")),
-    }
+    })
 }
 
 /// Signals a quiescent state where garbage may be collected.
@@ -225,20 +225,20 @@ pub fn release() {
 ///
 /// This may panic if called while a thread is pinned or if called from a deferred callback.
 pub fn collect() {
-    let data = unsafe { &*(hide(data())) };
+    data(|data| {
+        if cfg!(debug_assertions) {
+            // We check this only with `debug_assertions` to improve performance.
+            // A proper check is done in `collect_cold` if there's new events.
+            assert_collect_state(data);
+        }
 
-    if cfg!(debug_assertions) {
-        // We check this only with `debug_assertions` to improve performance.
-        // A proper check is done in `collect_cold` if there's new events.
-        assert_collect_state(data);
-    }
-
-    // `EVENTS` can wrap around causing us to miss an event.
-    // That is unlikely and will just delay reclamation until another event is triggered.
-    let new = EVENTS.load(Ordering::Acquire);
-    if unlikely(new != data.seen_events.get()) {
-        collect_cold();
-    }
+        // `EVENTS` can wrap around causing us to miss an event.
+        // That is unlikely and will just delay reclamation until another event is triggered.
+        let new = EVENTS.load(Ordering::Acquire);
+        if unlikely(new != data.seen_events.get()) {
+            collect_cold();
+        }
+    })
 }
 
 fn assert_collect_state(data: &Data) {
@@ -252,41 +252,42 @@ fn assert_collect_state(data: &Data) {
 #[inline(never)]
 #[cold]
 fn collect_cold() {
-    let data = unsafe { &*(hide(data())) };
-    assert_collect_state(data);
+    data(|data| {
+        assert_collect_state(data);
 
-    // Update seen events after `assert_collect_state` in it panics.
-    // This allows future `collect` to continue if we resume execution after the panic.
-    data.seen_events.set(EVENTS.load(Ordering::Relaxed));
+        // Update seen events after `assert_collect_state` in it panics.
+        // This allows future `collect` to continue if we resume execution after the panic.
+        data.seen_events.set(EVENTS.load(Ordering::Relaxed));
 
-    let old_state = data.state.get();
-    let _guard = guard(old_state, |state| data.state.set(*state));
-    data.state.set(State::Collecting);
+        let old_state = data.state.get();
+        let _guard = guard(old_state, |state| data.state.set(*state));
+        data.state.set(State::Collecting);
 
-    let callbacks = {
-        let mut collector = COLLECTOR.lock();
+        let callbacks = {
+            let mut collector = COLLECTOR.lock();
 
-        // Check if we could block any deferred methods
-        if let State::Registered = old_state {
-            collector.quiet()
-        } else {
-            collector.collect_unregistered()
+            // Check if we could block any deferred methods
+            if let State::Registered = old_state {
+                collector.quiet()
+            } else {
+                collector.collect_unregistered()
+            }
+        };
+
+        let mut panic = None;
+
+        for callback in callbacks {
+            if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| {
+                callback();
+            })) {
+                panic = Some(payload);
+            }
         }
-    };
 
-    let mut panic = None;
-
-    for callback in callbacks {
-        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| {
-            callback();
-        })) {
-            panic = Some(payload);
+        if let Some(payload) = panic {
+            panic::resume_unwind(payload)
         }
-    }
-
-    if let Some(payload) = panic {
-        panic::resume_unwind(payload)
-    }
+    })
 }
 
 static COLLECTOR: LazyLock<Mutex<Collector>> = LazyLock::new(|| Mutex::new(Collector::new()));
