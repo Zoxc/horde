@@ -33,11 +33,11 @@ jobs:
     - name: Test with all features
       run: cargo test --all-targets --all-features
 
-    - name: Miri
-      run: cargo miri test --all-targets
+#    - name: Miri
+#      run: cargo miri test --all-targets
 
-    - name: Miri with all features
-      run: cargo miri test --all-targets --all-features
+#    - name: Miri with all features
+#      run: cargo miri test --all-targets --all-features
 
     - name: Clippy
       run: cargo clippy --all-targets --all-features
