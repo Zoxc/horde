@@ -166,14 +166,15 @@ fn data<R>(f: impl FnOnce(&Data) -> R) -> R {
 #[inline]
 pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
     data(|data| {
-        if unlikely(!matches!(
-            data.state.get(),
-            State::Registered | State::Pinned
-        )) {
+        let state = data.state.get();
+        let old_state = if unlikely(!matches!(state, State::Registered | State::Pinned)) {
             pin_cold();
-        }
-
-        let old_state = data.state.get();
+            // `data.state` wlll always be `Registered` after `pin_cold`.
+            // This avoids a load from `data.state`.
+            State::Registered
+        } else {
+            state
+        };
         data.state.set(State::Pinned);
         let _guard = guard(old_state, |state| data.state.set(*state));
         f(Pin {
