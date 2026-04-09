@@ -5,6 +5,12 @@ use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 
 #[test]
+#[should_panic(expected = "capacity overflow")]
+fn test_with_capacity_panics_on_layout_alignment_overflow() {
+    SyncPushVec::<u8>::with_capacity(usize::MAX);
+}
+
+#[test]
 fn test_iter() {
     let _test = enter_test();
     let mut m = SyncPushVec::new();

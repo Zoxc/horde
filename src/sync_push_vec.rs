@@ -132,7 +132,7 @@ impl<T> TableRef<T> {
         // There can be padding at the start of the layout if the alignment of `T` is smaller than `TableInfo`.
         // Elements are accessed relatively from the start of `TableInfo` and not from the start of the layout.
         let data_size = mem::size_of::<T>().checked_mul(capacity)?;
-        let info_offset = align_up(data_size, mem::align_of::<TableInfo>());
+        let info_offset = align_up(data_size, mem::align_of::<TableInfo>())?;
         let size = info_offset.checked_add(mem::size_of::<TableInfo>())?;
         let align = mem::align_of::<T>().max(mem::align_of::<TableInfo>());
         let layout = Layout::from_size_align(size, align).ok()?;

@@ -269,7 +269,8 @@ impl TableInfoRef {
         unsafe {
             debug_assert!(index < self.info().num_ctrl_bytes());
 
-            let offset = align_up(mem::size_of::<TableInfo>(), mem::align_of::<Group>());
+            let offset =
+                align_up(mem::size_of::<TableInfo>(), mem::align_of::<Group>()).unwrap_unchecked();
 
             let ctrl = self.as_ptr().cast::<u8>().add(offset);
 
@@ -429,10 +430,10 @@ impl<T> TableRef<T> {
         let info_offset = align_up(
             buckets_size,
             mem::align_of::<TableInfo>().max(mem::align_of::<Group>()),
-        );
+        )?;
 
         let after_info = info_offset.checked_add(mem::size_of::<TableInfo>())?;
-        let ctrl_offset = align_up(after_info, mem::align_of::<Group>());
+        let ctrl_offset = align_up(after_info, mem::align_of::<Group>())?;
         let ctrl_size = bucket_count.checked_add(Group::WIDTH)?;
         let size = ctrl_offset.checked_add(ctrl_size)?;
         let align = mem::align_of::<T>()

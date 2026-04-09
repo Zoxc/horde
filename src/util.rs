@@ -41,7 +41,9 @@ where
 }
 
 #[inline]
-pub(crate) fn align_up(value: usize, align: usize) -> usize {
+pub(crate) fn align_up(value: usize, align: usize) -> Option<usize> {
     debug_assert!(align.is_power_of_two());
-    (value + align - 1) & !(align - 1)
+    value
+        .checked_add(align - 1)
+        .map(|value| value & !(align - 1))
 }
