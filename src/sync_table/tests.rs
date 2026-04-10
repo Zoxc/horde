@@ -177,7 +177,7 @@ fn remove_drops_values_after_reclamation() {
     }
 
     let drops = Arc::new(AtomicUsize::new(0));
-    let table = SyncTable::new();
+    let mut table = SyncTable::new();
 
     assert!(
         table
@@ -191,6 +191,8 @@ fn remove_drops_values_after_reclamation() {
         release();
         crate::collect::collect();
     }
+
+    table.write();
 
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

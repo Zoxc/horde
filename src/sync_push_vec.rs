@@ -14,12 +14,12 @@ use std::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 use std::{
     cmp,
     ptr::slice_from_raw_parts,
-    sync::{Arc, Weak, atomic::AtomicUsize},
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 mod code;
@@ -72,7 +72,8 @@ pub struct SyncPushVec<T> {
 
     lock: Mutex<()>,
 
-    old: UnsafeCell<Vec<Weak<DestroyTable<T>>>>,
+    retired: UnsafeCell<Vec<RetiredTable<T>>>,
+    any_retired_ready: Arc<AtomicBool>,
 
     // Tell dropck that we own instances of T.
     marker: PhantomData<T>,
@@ -288,24 +289,9 @@ impl<T: Clone> TableRef<T> {
     }
 }
 
-struct DestroyTable<T> {
+struct RetiredTable<T> {
     table: TableRef<T>,
-    lock: Mutex<bool>,
-}
-
-unsafe impl<T> Sync for DestroyTable<T> {}
-unsafe impl<T: Send> Send for DestroyTable<T> {}
-
-impl<T> DestroyTable<T> {
-    unsafe fn run(&self) {
-        unsafe {
-            let mut status = self.lock.lock();
-            if !*status {
-                *status = true;
-                self.table.free();
-            }
-        }
-    }
+    ready: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "nightly")]
@@ -314,10 +300,8 @@ unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
     fn drop(&mut self) {
         unsafe {
             self.current().free();
-            for table in self.old.get_mut() {
-                if let Some(table) = table.upgrade() {
-                    table.run();
-                }
+            for table in self.retired.get_mut() {
+                table.table.free();
             }
         }
     }
@@ -329,10 +313,8 @@ impl<T> Drop for SyncPushVec<T> {
     fn drop(&mut self) {
         unsafe {
             self.current().free();
-            for table in self.old.get_mut() {
-                if let Some(table) = table.upgrade() {
-                    table.run();
-                }
+            for table in self.retired.get_mut() {
+                table.table.free();
             }
         }
     }
@@ -372,7 +354,8 @@ impl<T> SyncPushVec<T> {
                 .data
                 .as_ptr(),
             ),
-            old: UnsafeCell::new(Vec::new()),
+            retired: UnsafeCell::new(Vec::new()),
+            any_retired_ready: Arc::new(AtomicBool::new(false)),
             marker: PhantomData,
             lock: Mutex::new(()),
         }
@@ -399,21 +382,24 @@ impl<T> SyncPushVec<T> {
     /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T> {
-        Write { table: self }
+        Write::new(self)
     }
 
     /// Creates a [Write] handle from a mutable reference.
     #[inline]
     pub fn write(&mut self) -> Write<'_, T> {
-        Write { table: self }
+        Write::new(self)
     }
 
     /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, T> {
+        let guard = self.lock.lock();
+        let table = Write::new(self);
+
         LockedWrite {
-            table: Write { table: self },
-            _guard: self.lock.lock(),
+            table,
+            _guard: guard,
         }
     }
 
@@ -426,8 +412,10 @@ impl<T> SyncPushVec<T> {
             MutexGuard::mutex(&guard) as *const _
         );
 
+        let table = Write::new(self);
+
         LockedWrite {
-            table: Write { table: self },
+            table,
             _guard: guard,
         }
     }
@@ -468,7 +456,14 @@ impl<'a, T> Read<'a, T> {
     }
 }
 
-impl<T> Write<'_, T> {
+impl<'a, T> Write<'a, T> {
+    #[inline]
+    fn new(table: &'a SyncPushVec<T>) -> Self {
+        let mut write = Self { table };
+        write.try_prune_tables();
+        write
+    }
+
     /// Creates a [Read] handle which gives access to read operations.
     #[inline]
     pub fn read(&self) -> Read<'_, T> {
@@ -563,41 +558,62 @@ impl<'a, T: Send + Clone> Write<'a, T> {
     }
 }
 
-impl<T: Send> Write<'_, T> {
-    fn prune_old_tables(&mut self) {
+impl<'a, T> Write<'a, T> {
+    #[inline]
+    fn try_prune_tables(&mut self) {
+        if unlikely(self.table.any_retired_ready.load(Ordering::Acquire)) {
+            self.prune_tables();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn prune_tables(&mut self) {
+        if !self.table.any_retired_ready.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
         unsafe {
-            (*self.table.old.get()).retain(|table| {
-                if let Some(table) = table.upgrade() {
-                    let is_done = *table.lock.lock();
-                    !is_done
+            let retired = &mut *self.table.retired.get();
+            let mut index = 0;
+            while index < retired.len() {
+                if retired[index].ready.load(Ordering::Relaxed) {
+                    // Use `swap_remove` to avoid double free if a destructor panics
+                    retired.swap_remove(index).table.free();
                 } else {
-                    false
+                    index += 1;
                 }
-            });
+            }
         }
     }
 
     fn replace_table(&mut self, new_table: TableRef<T>) {
-        self.prune_old_tables();
-
         let table = self.table.current();
 
         self.table
             .current
             .store(new_table.data.as_ptr(), Ordering::Release);
 
-        let destroy = Arc::new(DestroyTable {
-            table,
-            lock: Mutex::new(false),
-        });
+        let ready = Arc::new(AtomicBool::new(false));
 
         unsafe {
-            (*self.table.old.get()).push(Arc::downgrade(&destroy));
-
-            collect::defer_unchecked(move || destroy.run());
+            (*self.table.retired.get()).push(RetiredTable {
+                table,
+                ready: ready.clone(),
+            });
         }
-    }
 
+        // Keep ownership of retired tables in `self` so forgetting the container leaks instead of
+        // running drop glue after borrowed data has expired.
+        let any_retired_ready = self.table.any_retired_ready.clone();
+        collect::defer(move || {
+            ready.store(true, Ordering::Relaxed);
+            any_retired_ready.store(true, Ordering::Release);
+        });
+    }
+}
+
+impl<T: Send> Write<'_, T> {
     /// Replaces the content of the vector with the content of the iterator.
     /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
     #[inline]

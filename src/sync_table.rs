@@ -18,10 +18,10 @@ use std::{
     iter::{FromIterator, FusedIterator},
     marker::PhantomData,
     mem,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use std::{borrow::Borrow, hash::Hash};
-use std::{collections::hash_map::RandomState, sync::Arc, sync::Weak};
+use std::{collections::hash_map::RandomState, sync::Arc};
 use std::{ops::Deref, sync::atomic::AtomicPtr};
 use std::{ops::DerefMut, sync::atomic::AtomicUsize};
 
@@ -182,7 +182,8 @@ pub struct SyncTable<K, V, S = DefaultHashBuilder> {
 
     lock: Mutex<()>,
 
-    old: UnsafeCell<Vec<Weak<DestroyTable<(K, V)>>>>,
+    retired: UnsafeCell<Vec<RetiredTable<(K, V)>>>,
+    any_retired_ready: Arc<AtomicBool>,
 
     // Tell dropck that we own instances of K, V.
     marker: PhantomData<(K, V)>,
@@ -701,24 +702,9 @@ impl<T: Clone> TableRef<T> {
     }
 }
 
-struct DestroyTable<T> {
+struct RetiredTable<T> {
     table: TableRef<T>,
-    lock: Mutex<bool>,
-}
-
-unsafe impl<T> Sync for DestroyTable<T> {}
-unsafe impl<T: Send> Send for DestroyTable<T> {}
-
-impl<T> DestroyTable<T> {
-    unsafe fn run(&self) {
-        unsafe {
-            let mut status = self.lock.lock();
-            if !*status {
-                *status = true;
-                self.table.free();
-            }
-        }
-    }
+    ready: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "nightly")]
@@ -727,10 +713,8 @@ unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
     fn drop(&mut self) {
         unsafe {
             self.current().free();
-            for table in self.old.get_mut() {
-                if let Some(table) = table.upgrade() {
-                    table.run();
-                }
+            for table in self.retired.get_mut() {
+                table.table.free();
             }
         }
     }
@@ -742,10 +726,8 @@ impl<K, V, S> Drop for SyncTable<K, V, S> {
     fn drop(&mut self) {
         unsafe {
             self.current().free();
-            for table in self.old.get_mut() {
-                if let Some(table) = table.upgrade() {
-                    table.run();
-                }
+            for table in self.retired.get_mut() {
+                table.table.free();
             }
         }
     }
@@ -793,7 +775,8 @@ impl<K, V, S> SyncTable<K, V, S> {
                 .info
                 .as_ptr(),
             ),
-            old: UnsafeCell::new(Vec::new()),
+            retired: UnsafeCell::new(Vec::new()),
+            any_retired_ready: Arc::new(AtomicBool::new(false)),
             marker: PhantomData,
             lock: Mutex::new(()),
         }
@@ -826,21 +809,24 @@ impl<K, V, S> SyncTable<K, V, S> {
     /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, K, V, S> {
-        Write { table: self }
+        Write::new(self)
     }
 
     /// Creates a [Write] handle from a mutable reference.
     #[inline]
     pub fn write(&mut self) -> Write<'_, K, V, S> {
-        Write { table: self }
+        Write::new(self)
     }
 
     /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, K, V, S> {
+        let guard = self.lock.lock();
+        let table = Write::new(self);
+
         LockedWrite {
-            table: Write { table: self },
-            _guard: self.lock.lock(),
+            table,
+            _guard: guard,
         }
     }
 
@@ -853,8 +839,10 @@ impl<K, V, S> SyncTable<K, V, S> {
             MutexGuard::mutex(&guard) as *const _
         );
 
+        let table = Write::new(self);
+
         LockedWrite {
-            table: Write { table: self },
+            table,
             _guard: guard,
         }
     }
@@ -1055,7 +1043,8 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
                         .info
                         .as_ptr(),
                     ),
-                    old: UnsafeCell::new(Vec::new()),
+                    retired: UnsafeCell::new(Vec::new()),
+                    any_retired_ready: Arc::new(AtomicBool::new(false)),
                     marker: PhantomData,
                     lock: Mutex::new(()),
                 }
@@ -1065,6 +1054,13 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
 }
 
 impl<'a, K, V, S> Write<'a, K, V, S> {
+    #[inline]
+    fn new(table: &'a SyncTable<K, V, S>) -> Self {
+        let mut write = Self { table };
+        write.try_prune_tables();
+        write
+    }
+
     /// Creates a [Read] handle which gives access to read operations.
     #[inline]
     pub fn read(&self) -> Read<'_, K, V, S> {
@@ -1202,41 +1198,62 @@ impl<'a, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V
     }
 }
 
-impl<K: Hash + Send, V: Send, S: BuildHasher> Write<'_, K, V, S> {
-    fn prune_old_tables(&mut self) {
+impl<'a, K, V, S> Write<'a, K, V, S> {
+    #[inline]
+    fn try_prune_tables(&mut self) {
+        if unlikely(self.table.any_retired_ready.load(Ordering::Acquire)) {
+            self.prune_tables();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn prune_tables(&mut self) {
+        if !self.table.any_retired_ready.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
         unsafe {
-            (*self.table.old.get()).retain(|table| {
-                if let Some(table) = table.upgrade() {
-                    let is_done = *table.lock.lock();
-                    !is_done
+            let retired = &mut *self.table.retired.get();
+            let mut index = 0;
+            while index < retired.len() {
+                if retired[index].ready.load(Ordering::Relaxed) {
+                    // Use `swap_remove` to avoid double free if a destructor panics
+                    retired.swap_remove(index).table.free();
                 } else {
-                    false
+                    index += 1;
                 }
-            });
+            }
         }
     }
 
     fn replace_table(&mut self, new_table: TableRef<(K, V)>) {
-        self.prune_old_tables();
-
         let table = self.table.current();
 
         self.table
             .current
             .store(new_table.info.as_ptr(), Ordering::Release);
 
-        let destroy = Arc::new(DestroyTable {
-            table,
-            lock: Mutex::new(false),
-        });
+        let ready = Arc::new(AtomicBool::new(false));
 
         unsafe {
-            (*self.table.old.get()).push(Arc::downgrade(&destroy));
-
-            collect::defer_unchecked(move || destroy.run());
+            (*self.table.retired.get()).push(RetiredTable {
+                table,
+                ready: ready.clone(),
+            });
         }
-    }
 
+        // Keep ownership of retired tables in `self` so forgetting the container leaks instead of
+        // running drop glue after borrowed data has expired.
+        let any_retired_ready = self.table.any_retired_ready.clone();
+        collect::defer(move || {
+            ready.store(true, Ordering::Relaxed);
+            any_retired_ready.store(true, Ordering::Release);
+        });
+    }
+}
+
+impl<K: Hash + Send, V: Send, S: BuildHasher> Write<'_, K, V, S> {
     /// Replaces the content of the table with the content of the iterator.
     /// All the elements must be unique.
     /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
