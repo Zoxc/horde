@@ -120,6 +120,36 @@ fn replace_empty_preserves_requested_capacity() {
 }
 
 #[test]
+fn replace_then_forget_leaks_retired_values() {
+    let _test = enter_test();
+
+    #[derive(Clone)]
+    struct DropCounter(Arc<AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let table = SyncTable::new_with(RandomState::new(), 1);
+
+    assert!(
+        table
+            .lock()
+            .insert(1usize, DropCounter(drops.clone()), None)
+    );
+    table.lock().replace(Vec::<(usize, DropCounter)>::new(), 0);
+
+    mem::forget(table);
+
+    crate::collect::collect();
+
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn test_remove() {
     let _test = enter_test();
     let m = SyncTable::new();

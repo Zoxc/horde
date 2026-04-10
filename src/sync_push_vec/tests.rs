@@ -5,6 +5,8 @@ use crate::collect::enter_test;
 use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 use std::mem;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 #[should_panic(expected = "capacity overflow")]
@@ -107,6 +109,32 @@ fn test_replace_empty_preserves_requested_capacity() {
     assert_eq!(m.lock().read().as_slice(), []);
     assert_eq!(m.lock().read().capacity(), 8);
     release();
+}
+
+#[test]
+fn replace_then_forget_leaks_retired_elements() {
+    let _test = enter_test();
+
+    #[derive(Clone)]
+    struct DropCounter(Arc<AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let vector = SyncPushVec::with_capacity(1);
+
+    vector.lock().push(DropCounter(drops.clone()));
+    vector.lock().replace(Vec::<DropCounter>::new(), 0);
+
+    mem::forget(vector);
+
+    crate::collect::collect();
+
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
 #[test]
