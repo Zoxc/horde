@@ -1,11 +1,12 @@
 #![cfg(test)]
 
-use super::SyncTable;
+use super::{SyncTable, TableRef};
 use crate::collect::Pin;
 use crate::collect::enter_test;
 use crate::collect::pin;
 use crate::collect::release;
 use std::collections::hash_map::RandomState;
+use std::mem;
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::Hasher,
@@ -14,6 +15,18 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
+
+#[test]
+fn layout_rejects_bucket_storage_above_isize_max_bytes() {
+    let bucket_count = (isize::MAX as usize / mem::size_of::<u16>()) + 1;
+
+    assert!(TableRef::<u16>::layout(bucket_count).is_none());
+}
+
+#[test]
+fn layout_rejects_control_bytes_above_isize_max() {
+    assert!(TableRef::<()>::layout(isize::MAX as usize).is_none());
+}
 
 #[test]
 fn high_align() {
