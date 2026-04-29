@@ -176,6 +176,7 @@ fn collects_after_last_quiet_thread_releases() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "Cannot call `collect` while pinned")]
 fn collect_panics_while_pinned_without_events() {
     let _test = enter_test();
@@ -184,6 +185,7 @@ fn collect_panics_while_pinned_without_events() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 fn nested_pin_restores_outer_pinned_state() {
     let _test = enter_test();
 
@@ -257,6 +259,7 @@ fn callback_panic_does_not_drop_remaining_callbacks() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "Deferred callbacks cannot call `collect`")]
 fn callback_cannot_collect() {
     let _test = enter_test();
