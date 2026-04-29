@@ -321,7 +321,7 @@ impl<T> Drop for SyncPushVec<T> {
 }
 
 unsafe impl<T: Send> Send for SyncPushVec<T> {}
-unsafe impl<T: Sync> Sync for SyncPushVec<T> {}
+unsafe impl<T: Send + Sync> Sync for SyncPushVec<T> {}
 
 impl<T> Default for SyncPushVec<T> {
     #[inline]
@@ -471,7 +471,7 @@ impl<'a, T> Write<'a, T> {
     }
 }
 
-impl<'a, T: Send + Clone> Write<'a, T> {
+impl<'a, T: Clone> Write<'a, T> {
     /// Inserts a new element into the end of the table, and returns a refernce to it along
     /// with its index.
     #[inline]
@@ -613,7 +613,7 @@ impl<'a, T> Write<'a, T> {
     }
 }
 
-impl<T: Send> Write<'_, T> {
+impl<T> Write<'_, T> {
     /// Replaces the content of the vector with the content of the iterator.
     /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
     #[inline]
@@ -632,7 +632,7 @@ impl<T: Send> Write<'_, T> {
     }
 }
 
-impl<T: Clone + Send> Extend<T> for Write<'_, T> {
+impl<T: Clone> Extend<T> for Write<'_, T> {
     #[inline]
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         let iter = iter.into_iter();
@@ -655,7 +655,7 @@ impl<T: Clone + Send> Extend<T> for Write<'_, T> {
     }
 }
 
-impl<T: Clone + Send> FromIterator<T> for SyncPushVec<T> {
+impl<T: Clone> FromIterator<T> for SyncPushVec<T> {
     #[inline]
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let iter = iter.into_iter();

@@ -734,7 +734,7 @@ impl<K, V, S> Drop for SyncTable<K, V, S> {
 }
 
 unsafe impl<K: Send, V: Send, S: Send> Send for SyncTable<K, V, S> {}
-unsafe impl<K: Sync, V: Sync, S: Sync> Sync for SyncTable<K, V, S> {}
+unsafe impl<K: Send + Sync, V: Send + Sync, S: Sync> Sync for SyncTable<K, V, S> {}
 
 impl<K, V, S: Default> Default for SyncTable<K, V, S> {
     #[inline]
@@ -1074,7 +1074,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
     }
 }
 
-impl<'a, K: Send, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
+impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Removes an element from the table, and returns a reference to it if was present.
     ///
     /// The element will only be dropped after the internal table currently in use is replaced
@@ -1103,7 +1103,7 @@ impl<'a, K: Send, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
     }
 }
 
-impl<'a, K: Hash + Eq + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
+impl<'a, K: Hash + Eq + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Inserts a element into the table.
     /// Returns `false` if it already exists and doesn't update the value.
     #[inline]
@@ -1128,7 +1128,7 @@ impl<'a, K: Hash + Eq + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a,
     }
 }
 
-impl<'a, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher> Write<'a, K, V, S> {
+impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
@@ -1253,7 +1253,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
     }
 }
 
-impl<K: Hash + Send, V: Send, S: BuildHasher> Write<'_, K, V, S> {
+impl<K: Hash, V, S: BuildHasher> Write<'_, K, V, S> {
     /// Replaces the content of the table with the content of the iterator.
     /// All the elements must be unique.
     /// `capacity` specifies the new capacity if it's greater than the length of the iterator.
@@ -1285,7 +1285,7 @@ impl<K: Hash + Send, V: Send, S: BuildHasher> Write<'_, K, V, S> {
     }
 }
 
-impl<K: Eq + Hash + Clone + Send, V: Clone + Send, S: BuildHasher + Default> FromIterator<(K, V)>
+impl<K: Eq + Hash + Clone, V: Clone, S: BuildHasher + Default> FromIterator<(K, V)>
     for SyncTable<K, V, S>
 {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
@@ -1395,7 +1395,7 @@ impl<'a> PotentialSlot<'a> {
     ///
     /// This does not check if the given element already exists in the table.
     #[inline]
-    pub fn insert_new<'b, K: Hash + Send + Clone, V: Send + Clone, S: BuildHasher>(
+    pub fn insert_new<'b, K: Hash + Clone, V: Clone, S: BuildHasher>(
         self,
         table: &'b mut Write<'_, K, V, S>,
         key: K,
