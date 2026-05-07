@@ -1,4 +1,5 @@
 use core::hash::{BuildHasher, Hash};
+use std::cell::UnsafeCell;
 
 #[inline]
 pub(crate) fn likely(value: bool) -> bool {
@@ -47,3 +48,14 @@ pub(crate) fn align_up(value: usize, align: usize) -> Option<usize> {
         .checked_add(align - 1)
         .map(|value| value & !(align - 1))
 }
+
+#[repr(transparent)]
+pub(crate) struct SyncUnsafeCell<T>(pub(crate) UnsafeCell<T>);
+
+impl<T> SyncUnsafeCell<T> {
+    pub(crate) const fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+}
+
+unsafe impl<T> Sync for SyncUnsafeCell<T> {}

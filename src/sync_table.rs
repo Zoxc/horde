@@ -6,14 +6,12 @@ use crate::{
     collect::{self, Pin, pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
-    util::{align_up, cold_path, likely, make_insert_hash, unlikely},
+    util::{SyncUnsafeCell, align_up, cold_path, likely, make_insert_hash, unlikely},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
-use std::collections::hash_map::RandomState;
 use std::{
     alloc::{Layout, alloc, dealloc, handle_alloc_error},
-    cell::UnsafeCell,
     cmp, fmt,
     hash::BuildHasher,
     iter::{FromIterator, FusedIterator},
@@ -22,22 +20,12 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use std::{borrow::Borrow, hash::Hash};
+use std::{cell::Cell, collections::hash_map::RandomState};
 use std::{ops::Deref, sync::atomic::AtomicPtr};
 use std::{ops::DerefMut, sync::atomic::AtomicUsize};
 
 mod code;
 mod tests;
-
-#[repr(transparent)]
-struct SyncUnsafeCell<T>(UnsafeCell<T>);
-
-impl<T> SyncUnsafeCell<T> {
-    const fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
-    }
-}
-
-unsafe impl<T> Sync for SyncUnsafeCell<T> {}
 
 #[inline]
 fn hasher<K: Hash, V, S: BuildHasher>(hash_builder: &S, val: &(K, V)) -> u64 {
@@ -182,7 +170,8 @@ pub struct SyncTable<K, V, S = DefaultHashBuilder> {
 
     lock: Mutex<()>,
 
-    retired: UnsafeCell<Vec<RetiredTable<(K, V)>>>,
+    // A linked list of retired tables
+    retired: Cell<TableInfoRef>,
 
     // Tell dropck that we own instances of K, V.
     marker: PhantomData<(K, V)>,
@@ -191,6 +180,7 @@ pub struct SyncTable<K, V, S = DefaultHashBuilder> {
 struct TableInfo {
     // Mask to get an index from a hash value. The value is one less than the
     // number of buckets in the table.
+    // If this is 0, this table must be the static `EMPTY_TABLE`.
     bucket_mask: usize,
 
     // Number of elements that can be inserted before we need to grow the table
@@ -200,6 +190,9 @@ struct TableInfo {
     tombstones: AtomicUsize,
 
     can_free: AtomicBool,
+
+    // The next entry in the retired linked list
+    next_retired: Cell<TableInfoRef>,
 }
 
 impl TableInfo {
@@ -244,7 +237,7 @@ struct TableInfoRef {
 
 impl TableInfoRef {
     #[inline]
-    unsafe fn new(ptr: *mut TableInfo) -> Self {
+    const unsafe fn new(ptr: *mut TableInfo) -> Self {
         unsafe {
             Self {
                 ptr: NonNull::new_unchecked(ptr),
@@ -381,6 +374,61 @@ impl TableInfoRef {
             }
         }
     }
+
+    #[inline]
+    fn empty() -> Self {
+        #[repr(C)]
+        struct EmptyTable {
+            info: TableInfo,
+            control_bytes: Group,
+        }
+
+        const EMPTY_TABLE_REF: TableInfoRef =
+            unsafe { TableInfoRef::new((&raw const (*EMPTY_TABLE.0.get()).info).cast_mut()) };
+
+        static EMPTY_TABLE: SyncUnsafeCell<EmptyTable> = SyncUnsafeCell::new(EmptyTable {
+            info: TableInfo {
+                bucket_mask: 0,
+                growth_left: AtomicUsize::new(0),
+                tombstones: AtomicUsize::new(0),
+                can_free: AtomicBool::new(false),
+                next_retired: Cell::new(EMPTY_TABLE_REF),
+            },
+            control_bytes: Group::EMPTY,
+        });
+
+        EMPTY_TABLE_REF
+    }
+
+    // Checks if this table is `EMPTY_TABLE`
+    #[inline]
+    unsafe fn is_static_empty(self) -> bool {
+        unsafe { self.info().bucket_mask == 0 }
+    }
+
+    #[inline]
+    fn retired_iter(self) -> RetiredIter {
+        RetiredIter { next: self }
+    }
+}
+
+struct RetiredIter {
+    next: TableInfoRef,
+}
+
+impl Iterator for RetiredIter {
+    type Item = TableInfoRef;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if unsafe { self.next.is_static_empty() } {
+            None
+        } else {
+            let table = self.next;
+            self.next = unsafe { table.info().next_retired.get() };
+            Some(table)
+        }
+    }
 }
 
 #[repr(transparent)]
@@ -400,27 +448,16 @@ impl<T> Clone for TableRef<T> {
 
 impl<T> TableRef<T> {
     #[inline]
-    fn empty() -> Self {
-        #[repr(C)]
-        struct EmptyTable {
-            info: TableInfo,
-            control_bytes: SyncUnsafeCell<Group>,
-        }
-
-        static EMPTY_TABLE: EmptyTable = EmptyTable {
-            info: TableInfo {
-                bucket_mask: 0,
-                growth_left: AtomicUsize::new(0),
-                tombstones: AtomicUsize::new(0),
-                can_free: AtomicBool::new(false),
-            },
-            control_bytes: SyncUnsafeCell::new(Group::EMPTY),
-        };
-
+    fn from(info: TableInfoRef) -> Self {
         Self {
-            info: unsafe { TableInfoRef::new(&EMPTY_TABLE as *const EmptyTable as *mut TableInfo) },
+            info,
             marker: PhantomData,
         }
+    }
+
+    #[inline]
+    fn empty() -> Self {
+        Self::from(TableInfoRef::empty())
     }
 
     #[inline]
@@ -466,6 +503,7 @@ impl<T> TableRef<T> {
                 growth_left: AtomicUsize::new(bucket_mask_to_capacity(bucket_count - 1)),
                 tombstones: AtomicUsize::new(0),
                 can_free: AtomicBool::new(false),
+                next_retired: Cell::new(TableInfoRef::empty()),
             };
 
             result
@@ -705,10 +743,6 @@ impl<T: Clone> TableRef<T> {
     }
 }
 
-struct RetiredTable<T> {
-    table: TableRef<T>,
-}
-
 #[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
     #[inline]
@@ -753,14 +787,15 @@ impl<K, V, S> SyncTable<K, V, S> {
             collect::cancel_by_ids(
                 self.retired
                     .get_mut()
-                    .iter()
-                    .filter(|table| !table.table.info().can_free.load(Ordering::Acquire))
-                    .map(|table| &table.table.info().can_free as *const AtomicBool),
+                    .retired_iter()
+                    .filter(|table| !table.info().can_free.load(Ordering::Acquire))
+                    .map(|table| &table.info().can_free as *const AtomicBool),
             );
 
             self.current().free();
-            for table in self.retired.get_mut() {
-                table.table.free();
+
+            for info in self.retired.get_mut().retired_iter() {
+                TableRef::<(K, V)>::from(info).free();
             }
         }
     }
@@ -785,7 +820,7 @@ impl<K, V, S> SyncTable<K, V, S> {
                 .info
                 .as_ptr(),
             ),
-            retired: UnsafeCell::new(Vec::new()),
+            retired: Cell::new(TableInfoRef::empty()),
             marker: PhantomData,
             lock: Mutex::new(()),
         }
@@ -858,10 +893,7 @@ impl<K, V, S> SyncTable<K, V, S> {
 
     #[inline]
     fn current(&self) -> TableRef<(K, V)> {
-        TableRef {
-            info: unsafe { TableInfoRef::new(self.current.load(Ordering::Acquire)) },
-            marker: PhantomData,
-        }
+        unsafe { TableRef::from(TableInfoRef::new(self.current.load(Ordering::Acquire))) }
     }
 }
 
@@ -1052,7 +1084,7 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
                         .info
                         .as_ptr(),
                     ),
-                    retired: UnsafeCell::new(Vec::new()),
+                    retired: Cell::new(TableInfoRef::empty()),
                     marker: PhantomData,
                     lock: Mutex::new(()),
                 }
@@ -1210,9 +1242,12 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
     #[inline]
     fn try_prune_tables(&mut self) {
         if unlikely(unsafe {
-            (&*self.table.retired.get())
-                .first()
-                .is_some_and(|table| table.table.info().can_free.load(Ordering::Acquire))
+            self.table
+                .retired
+                .get()
+                .info()
+                .can_free
+                .load(Ordering::Acquire)
         }) {
             self.prune_tables();
         }
@@ -1222,13 +1257,12 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
     #[inline(never)]
     fn prune_tables(&mut self) {
         unsafe {
-            let retired = &mut *self.table.retired.get();
-            while retired
-                .first()
-                .is_some_and(|table| table.table.info().can_free.load(Ordering::Acquire))
-            {
-                // Remove from the list before calling `free` to avoid double free if a destructor panics
-                retired.remove(0).table.free();
+            let retired = &self.table.retired;
+            while retired.get().info().can_free.load(Ordering::Acquire) {
+                // Remove from the list before calling `free` to avoid double free if a destructor panics.
+                let table = retired.get();
+                retired.set(table.info().next_retired.get());
+                TableRef::<(K, V)>::from(table).free();
             }
         }
     }
@@ -1240,12 +1274,19 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
             .current
             .store(new_table.info.as_ptr(), Ordering::Release);
 
-        if unsafe { table.info().bucket_mask == 0 } {
+        if unsafe { table.info.is_static_empty() } {
             return;
         }
 
+        // Add the old table to the `next_retired` list
         unsafe {
-            (*self.table.retired.get()).push(RetiredTable { table });
+            table.info().next_retired.set(TableInfoRef::empty());
+
+            if let Some(tail) = self.table.retired.get().retired_iter().last() {
+                tail.info().next_retired.set(table.info);
+            } else {
+                self.table.retired.set(table.info);
+            }
         }
 
         // Keep ownership of retired tables in `self` so forgetting the container leaks instead of
