@@ -711,12 +711,7 @@ struct RetiredTable<T> {
 unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
     #[inline]
     fn drop(&mut self) {
-        unsafe {
-            self.current().free();
-            for table in self.retired.get_mut() {
-                table.table.free();
-            }
-        }
+        self.drop_impl();
     }
 }
 
@@ -724,12 +719,7 @@ unsafe impl<#[may_dangle] K, #[may_dangle] V, S> Drop for SyncTable<K, V, S> {
 impl<K, V, S> Drop for SyncTable<K, V, S> {
     #[inline]
     fn drop(&mut self) {
-        unsafe {
-            self.current().free();
-            for table in self.retired.get_mut() {
-                table.table.free();
-            }
-        }
+        self.drop_impl();
     }
 }
 
@@ -755,6 +745,16 @@ impl<K, V> SyncTable<K, V, DefaultHashBuilder> {
 }
 
 impl<K, V, S> SyncTable<K, V, S> {
+    #[inline]
+    fn drop_impl(&mut self) {
+        unsafe {
+            self.current().free();
+            for table in self.retired.get_mut() {
+                table.table.free();
+            }
+        }
+    }
+
     /// Creates an empty [SyncTable] with the specified capacity, using `hash_builder`
     /// to hash the elements or keys.
     ///

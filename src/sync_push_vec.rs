@@ -298,12 +298,7 @@ struct RetiredTable<T> {
 unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
     #[inline]
     fn drop(&mut self) {
-        unsafe {
-            self.current().free();
-            for table in self.retired.get_mut() {
-                table.table.free();
-            }
-        }
+        self.drop_impl();
     }
 }
 
@@ -311,12 +306,7 @@ unsafe impl<#[may_dangle] T> Drop for SyncPushVec<T> {
 impl<T> Drop for SyncPushVec<T> {
     #[inline]
     fn drop(&mut self) {
-        unsafe {
-            self.current().free();
-            for table in self.retired.get_mut() {
-                table.table.free();
-            }
-        }
+        self.drop_impl();
     }
 }
 
@@ -331,6 +321,16 @@ impl<T> Default for SyncPushVec<T> {
 }
 
 impl<T> SyncPushVec<T> {
+    #[inline]
+    fn drop_impl(&mut self) {
+        unsafe {
+            self.current().free();
+            for table in self.retired.get_mut() {
+                table.table.free();
+            }
+        }
+    }
+
     /// Constructs a new, empty vector with zero capacity.
     ///
     /// The vector will not allocate until elements are pushed onto it.
