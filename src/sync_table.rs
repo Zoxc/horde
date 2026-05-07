@@ -183,7 +183,6 @@ pub struct SyncTable<K, V, S = DefaultHashBuilder> {
     lock: Mutex<()>,
 
     retired: UnsafeCell<Vec<RetiredTable<(K, V)>>>,
-    any_retired_ready: Arc<AtomicBool>,
 
     // Tell dropck that we own instances of K, V.
     marker: PhantomData<(K, V)>,
@@ -776,7 +775,6 @@ impl<K, V, S> SyncTable<K, V, S> {
                 .as_ptr(),
             ),
             retired: UnsafeCell::new(Vec::new()),
-            any_retired_ready: Arc::new(AtomicBool::new(false)),
             marker: PhantomData,
             lock: Mutex::new(()),
         }
@@ -1044,7 +1042,6 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
                         .as_ptr(),
                     ),
                     retired: UnsafeCell::new(Vec::new()),
-                    any_retired_ready: Arc::new(AtomicBool::new(false)),
                     marker: PhantomData,
                     lock: Mutex::new(()),
                 }
@@ -1201,7 +1198,11 @@ impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
 impl<'a, K, V, S> Write<'a, K, V, S> {
     #[inline]
     fn try_prune_tables(&mut self) {
-        if unlikely(self.table.any_retired_ready.load(Ordering::Acquire)) {
+        if unlikely(unsafe {
+            (&*self.table.retired.get())
+                .first()
+                .is_some_and(|table| table.ready.load(Ordering::Acquire))
+        }) {
             self.prune_tables();
         }
     }
@@ -1209,20 +1210,14 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
     #[cold]
     #[inline(never)]
     fn prune_tables(&mut self) {
-        if !self.table.any_retired_ready.swap(false, Ordering::AcqRel) {
-            return;
-        }
-
         unsafe {
             let retired = &mut *self.table.retired.get();
-            let mut index = 0;
-            while index < retired.len() {
-                if retired[index].ready.load(Ordering::Relaxed) {
-                    // Use `swap_remove` to avoid double free if a destructor panics
-                    retired.swap_remove(index).table.free();
-                } else {
-                    index += 1;
-                }
+            while retired
+                .first()
+                .is_some_and(|table| table.ready.load(Ordering::Acquire))
+            {
+                // Remove from the list before calling `free` to avoid double free if a destructor panics
+                retired.remove(0).table.free();
             }
         }
     }
@@ -1245,10 +1240,8 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
 
         // Keep ownership of retired tables in `self` so forgetting the container leaks instead of
         // running drop glue after borrowed data has expired.
-        let any_retired_ready = self.table.any_retired_ready.clone();
         collect::defer(move || {
-            ready.store(true, Ordering::Relaxed);
-            any_retired_ready.store(true, Ordering::Release);
+            ready.store(true, Ordering::Release);
         });
     }
 }
