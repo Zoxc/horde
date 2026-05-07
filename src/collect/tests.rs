@@ -6,7 +6,7 @@ use std::sync::Barrier;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -358,4 +358,61 @@ fn collect_after_epoch_completion_without_new_defers_runs_pending_callbacks() {
 
     collect::collect();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cancel_by_id_prevents_matching_callbacks() {
+    let _test = enter_test();
+
+    let first = AtomicBool::new(false);
+    let second = AtomicBool::new(false);
+
+    unsafe {
+        collect::defer_by_id(&first);
+        collect::defer_by_id(&second);
+    }
+
+    collect::cancel_by_ids([&first as *const AtomicBool]);
+    collect::collect();
+
+    assert!(!first.load(Ordering::SeqCst));
+    assert!(second.load(Ordering::SeqCst));
+}
+
+#[test]
+fn cancel_by_id_removes_pending_callbacks() {
+    let _test = enter_test();
+
+    let ready = Arc::new(Barrier::new(2));
+    let release_thread = Arc::new(Barrier::new(2));
+
+    let handle = {
+        let ready = ready.clone();
+        let release_thread = release_thread.clone();
+        thread::spawn(move || {
+            collect::pin(|_| ());
+            ready.wait();
+            release_thread.wait();
+            collect::release();
+        })
+    };
+
+    collect::pin(|_| ());
+    ready.wait();
+    collect::collect();
+
+    let ready_flag = AtomicBool::new(false);
+    unsafe {
+        collect::defer_by_id(&ready_flag);
+    }
+
+    collect::collect();
+    assert!(!ready_flag.load(Ordering::SeqCst));
+
+    release_thread.wait();
+    handle.join().unwrap();
+
+    collect::cancel_by_ids([&ready_flag as *const AtomicBool]);
+    collect::collect();
+    assert!(!ready_flag.load(Ordering::SeqCst));
 }

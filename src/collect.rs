@@ -15,11 +15,12 @@ use parking_lot::Mutex;
 use std::{
     cell::Cell,
     collections::HashMap,
+    collections::HashSet,
     marker::PhantomData,
     mem,
     panic::{self, AssertUnwindSafe},
     sync::LazyLock,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread::{self, ThreadId},
 };
 
@@ -50,6 +51,27 @@ pub struct Pin<'a> {
 /// They are typically used to destroy or free data that was removed from a lock-free structure.
 pub fn defer(f: impl FnOnce() + Send + 'static) {
     COLLECTOR.lock().defer(Box::new(f));
+}
+
+/// Schedules `ready` to be set to `true` after all threads leave their current pinned regions.
+///
+/// [cancel_by_ids] can be used to prevent writes for matching pointers.
+///
+/// # Safety
+/// The caller must ensure `ready` remains valid until it is set to `true` by the collector or the
+/// store is cancelled using [cancel_by_ids].
+pub(crate) unsafe fn defer_by_id(ready: *const AtomicBool) {
+    COLLECTOR.lock().defer_by_id(ready);
+}
+
+/// Prevents execution of any deferred stores registered by [defer_by_id] with matching pointers.
+pub(crate) fn cancel_by_ids(ids: impl IntoIterator<Item = *const AtomicBool>) {
+    let ids: HashSet<_> = ids.into_iter().collect();
+    if ids.is_empty() {
+        return;
+    }
+
+    COLLECTOR.lock().cancel_by_ids(&ids);
 }
 
 /// Schedules a closure to run after all threads leave their current pinned regions.
@@ -268,16 +290,21 @@ fn collect_cold() {
             let mut collector = COLLECTOR.lock();
 
             // Check if we could block any deferred methods
-            if let State::Registered = old_state {
+            let mut callbacks = if let State::Registered = old_state {
                 collector.quiet()
             } else {
                 collector.collect_unregistered()
-            }
+            };
+
+            // Mark bools as ready inside the collector lock to prevent races with `cancel_by_ids`
+            callbacks.mark_ready();
+
+            callbacks
         };
 
         let mut panic = None;
 
-        for callback in callbacks {
+        for callback in callbacks.deferred {
             if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| {
                 callback();
             })) {
@@ -293,7 +320,47 @@ fn collect_cold() {
 
 static COLLECTOR: LazyLock<Mutex<Collector>> = LazyLock::new(|| Mutex::new(Collector::new()));
 
-type Callbacks = Vec<Box<dyn FnOnce() + Send>>;
+#[derive(Default)]
+struct Callbacks {
+    deferred: Vec<Box<dyn FnOnce() + Send>>,
+    defer_by_id: Vec<*const AtomicBool>,
+}
+
+// SAFETY: `AtomicBool` is safe to send
+unsafe impl Send for Callbacks {}
+
+impl Callbacks {
+    fn push(&mut self, callback: Box<dyn FnOnce() + Send>) {
+        self.deferred.push(callback);
+    }
+
+    fn push_id(&mut self, ready: *const AtomicBool) {
+        self.defer_by_id.push(ready);
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.deferred.extend(other.deferred);
+        self.defer_by_id.extend(other.defer_by_id);
+    }
+
+    fn mark_ready(&mut self) {
+        for ready in self.defer_by_id.drain(..) {
+            // SAFETY: It's up the the caller of `defer_by_id` to ensure this
+            // pointer stays valid.
+            unsafe {
+                (*ready).store(true, Ordering::Release);
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.deferred.is_empty() && self.defer_by_id.is_empty()
+    }
+
+    fn cancel_by_ids(&mut self, ids: &HashSet<*const AtomicBool>) {
+        self.defer_by_id.retain(|ready| !ids.contains(ready));
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ThreadState {
@@ -320,11 +387,11 @@ struct Collector {
 impl Collector {
     fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            pending: Callbacks::default(),
             busy_count: 0,
             threads: HashMap::new(),
-            current_deferred: Vec::new(),
-            previous_deferred: Vec::new(),
+            current_deferred: Callbacks::default(),
+            previous_deferred: Callbacks::default(),
         }
     }
 
@@ -395,6 +462,17 @@ impl Collector {
     fn defer(&mut self, callback: Box<dyn FnOnce() + Send>) {
         self.current_deferred.push(callback);
         EVENTS.fetch_add(1, Ordering::Release);
+    }
+
+    fn defer_by_id(&mut self, ready: *const AtomicBool) {
+        self.current_deferred.push_id(ready);
+        EVENTS.fetch_add(1, Ordering::Release);
+    }
+
+    fn cancel_by_ids(&mut self, ids: &HashSet<*const AtomicBool>) {
+        self.pending.cancel_by_ids(ids);
+        self.current_deferred.cancel_by_ids(ids);
+        self.previous_deferred.cancel_by_ids(ids);
     }
 
     fn complete_epoch(&mut self, signal_pending: bool) {

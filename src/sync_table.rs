@@ -10,6 +10,7 @@ use crate::{
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
+use std::collections::hash_map::RandomState;
 use std::{
     alloc::{Layout, alloc, dealloc, handle_alloc_error},
     cell::UnsafeCell,
@@ -21,7 +22,6 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use std::{borrow::Borrow, hash::Hash};
-use std::{collections::hash_map::RandomState, sync::Arc};
 use std::{ops::Deref, sync::atomic::AtomicPtr};
 use std::{ops::DerefMut, sync::atomic::AtomicUsize};
 
@@ -198,6 +198,8 @@ struct TableInfo {
 
     // Number of elements that has been removed from the table
     tombstones: AtomicUsize,
+
+    can_free: AtomicBool,
 }
 
 impl TableInfo {
@@ -410,6 +412,7 @@ impl<T> TableRef<T> {
                 bucket_mask: 0,
                 growth_left: AtomicUsize::new(0),
                 tombstones: AtomicUsize::new(0),
+                can_free: AtomicBool::new(false),
             },
             control_bytes: SyncUnsafeCell::new(Group::EMPTY),
         };
@@ -462,6 +465,7 @@ impl<T> TableRef<T> {
                 bucket_mask: bucket_count - 1,
                 growth_left: AtomicUsize::new(bucket_mask_to_capacity(bucket_count - 1)),
                 tombstones: AtomicUsize::new(0),
+                can_free: AtomicBool::new(false),
             };
 
             result
@@ -703,7 +707,6 @@ impl<T: Clone> TableRef<T> {
 
 struct RetiredTable<T> {
     table: TableRef<T>,
-    ready: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "nightly")]
@@ -747,6 +750,14 @@ impl<K, V, S> SyncTable<K, V, S> {
     #[inline]
     fn drop_impl(&mut self) {
         unsafe {
+            collect::cancel_by_ids(
+                self.retired
+                    .get_mut()
+                    .iter()
+                    .filter(|table| !table.table.info().can_free.load(Ordering::Acquire))
+                    .map(|table| &table.table.info().can_free as *const AtomicBool),
+            );
+
             self.current().free();
             for table in self.retired.get_mut() {
                 table.table.free();
@@ -1201,7 +1212,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
         if unlikely(unsafe {
             (&*self.table.retired.get())
                 .first()
-                .is_some_and(|table| table.ready.load(Ordering::Acquire))
+                .is_some_and(|table| table.table.info().can_free.load(Ordering::Acquire))
         }) {
             self.prune_tables();
         }
@@ -1214,7 +1225,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
             let retired = &mut *self.table.retired.get();
             while retired
                 .first()
-                .is_some_and(|table| table.ready.load(Ordering::Acquire))
+                .is_some_and(|table| table.table.info().can_free.load(Ordering::Acquire))
             {
                 // Remove from the list before calling `free` to avoid double free if a destructor panics
                 retired.remove(0).table.free();
@@ -1229,20 +1240,19 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
             .current
             .store(new_table.info.as_ptr(), Ordering::Release);
 
-        let ready = Arc::new(AtomicBool::new(false));
+        if unsafe { table.info().bucket_mask == 0 } {
+            return;
+        }
 
         unsafe {
-            (*self.table.retired.get()).push(RetiredTable {
-                table,
-                ready: ready.clone(),
-            });
+            (*self.table.retired.get()).push(RetiredTable { table });
         }
 
         // Keep ownership of retired tables in `self` so forgetting the container leaks instead of
         // running drop glue after borrowed data has expired.
-        collect::defer(move || {
-            ready.store(true, Ordering::Release);
-        });
+        unsafe {
+            collect::defer_by_id(&table.info().can_free);
+        }
     }
 }
 

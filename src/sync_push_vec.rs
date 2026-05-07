@@ -16,11 +16,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
-use std::{
-    cmp,
-    ptr::slice_from_raw_parts,
-    sync::{Arc, atomic::AtomicUsize},
-};
+use std::{cmp, ptr::slice_from_raw_parts, sync::atomic::AtomicUsize};
 
 mod code;
 mod tests;
@@ -81,6 +77,7 @@ pub struct SyncPushVec<T> {
 struct TableInfo {
     items: AtomicUsize,
     capacity: usize,
+    can_free: AtomicBool,
 }
 
 #[repr(transparent)]
@@ -116,6 +113,7 @@ impl<T> TableRef<T> {
             info: TableInfo {
                 capacity: 0,
                 items: AtomicUsize::new(0),
+                can_free: AtomicBool::new(false),
             },
         };
 
@@ -160,6 +158,7 @@ impl<T> TableRef<T> {
             *result.info_mut() = TableInfo {
                 capacity,
                 items: AtomicUsize::new(0),
+                can_free: AtomicBool::new(false),
             };
         }
 
@@ -290,7 +289,6 @@ impl<T: Clone> TableRef<T> {
 
 struct RetiredTable<T> {
     table: TableRef<T>,
-    ready: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "nightly")]
@@ -323,6 +321,14 @@ impl<T> SyncPushVec<T> {
     #[inline]
     fn drop_impl(&mut self) {
         unsafe {
+            collect::cancel_by_ids(
+                self.retired
+                    .get_mut()
+                    .iter()
+                    .filter(|table| !table.table.info().can_free.load(Ordering::Acquire))
+                    .map(|table| &table.table.info().can_free as *const AtomicBool),
+            );
+
             self.current().free();
             for table in self.retired.get_mut() {
                 table.table.free();
@@ -562,7 +568,7 @@ impl<'a, T> Write<'a, T> {
         if unlikely(unsafe {
             (&*self.table.retired.get())
                 .first()
-                .is_some_and(|table| table.ready.load(Ordering::Acquire))
+                .is_some_and(|table| table.table.info().can_free.load(Ordering::Acquire))
         }) {
             self.prune_tables();
         }
@@ -575,7 +581,7 @@ impl<'a, T> Write<'a, T> {
             let retired = &mut *self.table.retired.get();
             while retired
                 .first()
-                .is_some_and(|table| table.ready.load(Ordering::Acquire))
+                .is_some_and(|table| table.table.info().can_free.load(Ordering::Acquire))
             {
                 // Remove from the list before calling `free` to avoid double free if a destructor panics
                 retired.remove(0).table.free();
@@ -590,20 +596,19 @@ impl<'a, T> Write<'a, T> {
             .current
             .store(new_table.data.as_ptr(), Ordering::Release);
 
-        let ready = Arc::new(AtomicBool::new(false));
+        if unsafe { table.info().capacity == 0 } {
+            return;
+        }
 
         unsafe {
-            (*self.table.retired.get()).push(RetiredTable {
-                table,
-                ready: ready.clone(),
-            });
+            (*self.table.retired.get()).push(RetiredTable { table });
         }
 
         // Keep ownership of retired tables in `self` so forgetting the container leaks instead of
         // running drop glue after borrowed data has expired.
-        collect::defer(move || {
-            ready.store(true, Ordering::Release);
-        });
+        unsafe {
+            collect::defer_by_id(&table.info().can_free);
+        }
     }
 }
 
