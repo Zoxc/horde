@@ -192,7 +192,7 @@ fn remove_drops_values_after_reclamation() {
         crate::collect::collect();
     }
 
-    table.write();
+    table.write().prune();
 
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

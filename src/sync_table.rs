@@ -853,20 +853,52 @@ impl<K, V, S> SyncTable<K, V, S> {
     /// It's up to the caller to ensure only one thread writes to the vector at a time.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, K, V, S> {
-        Write::new(self)
+        Write::new_and_prune(self)
+    }
+
+    /// Creates a [Write] handle without checking for exclusive access.
+    ///
+    /// This does not prune old tables unlike [SyncTable::unsafe_write].
+    /// Instead [Write::prune] must be manually called to free old tables.
+    ///
+    /// # Safety
+    /// It's up to the caller to ensure only one thread writes to the vector at a time.
+    #[inline]
+    pub unsafe fn unsafe_write_no_prune(&self) -> Write<'_, K, V, S> {
+        Write { table: self }
     }
 
     /// Creates a [Write] handle from a mutable reference.
     #[inline]
     pub fn write(&mut self) -> Write<'_, K, V, S> {
-        Write::new(self)
+        Write::new_and_prune(self)
+    }
+
+    /// Creates a [Write] handle from a mutable reference.
+    ///
+    /// This does not prune old tables unlike [SyncTable::write].
+    /// Instead [Write::prune] must be manually called to free old tables.
+    #[inline]
+    pub fn write_no_prune(&mut self) -> Write<'_, K, V, S> {
+        Write { table: self }
     }
 
     /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, K, V, S> {
+        let mut write = self.lock_no_prune();
+        write.prune();
+        write
+    }
+
+    /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
+    ///
+    /// This does not prune old tables unlike [SyncTable::lock].
+    /// Instead [Write::prune] must be manually called to free old tables.
+    #[inline]
+    pub fn lock_no_prune(&self) -> LockedWrite<'_, K, V, S> {
         let guard = self.lock.lock();
-        let table = Write::new(self);
+        let table = Write { table: self };
 
         LockedWrite {
             table,
@@ -877,13 +909,27 @@ impl<K, V, S> SyncTable<K, V, S> {
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
     #[inline]
     pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, K, V, S> {
+        let mut write = self.lock_from_guard_no_prune(guard);
+        write.prune();
+        write
+    }
+
+    /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
+    ///
+    /// This does not prune old tables unlike [SyncTable::lock_from_guard].
+    /// Instead [Write::prune] must be manually called to free old tables.
+    #[inline]
+    pub fn lock_from_guard_no_prune<'a>(
+        &'a self,
+        guard: MutexGuard<'a, ()>,
+    ) -> LockedWrite<'a, K, V, S> {
         // Verify that we are target of the guard
         assert_eq!(
             &self.lock as *const _,
             MutexGuard::mutex(&guard) as *const _
         );
 
-        let table = Write::new(self);
+        let table = Write { table: self };
 
         LockedWrite {
             table,
@@ -1095,10 +1141,16 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
 
 impl<'a, K, V, S> Write<'a, K, V, S> {
     #[inline]
-    fn new(table: &'a SyncTable<K, V, S>) -> Self {
+    fn new_and_prune(table: &'a SyncTable<K, V, S>) -> Self {
         let mut write = Self { table };
         write.try_prune_tables();
         write
+    }
+
+    /// Frees old unused tables
+    #[inline]
+    pub fn prune(&mut self) {
+        self.try_prune_tables();
     }
 
     /// Creates a [Read] handle which gives access to read operations.
