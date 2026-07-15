@@ -43,9 +43,7 @@ where
 
 /// A reference to a hash table bucket containing a `T`.
 ///
-/// This is usually just a pointer to the element itself. However if the element
-/// is a ZST, then we instead track the index of the element in the table so
-/// that `erase` works properly.
+/// This is a pointer to the element itself.
 struct Bucket<T> {
     // Actually it is pointer to next element than element itself
     // this is needed to maintain pointer arithmetic invariants
@@ -64,23 +62,13 @@ impl<T> Clone for Bucket<T> {
 impl<T> Bucket<T> {
     #[inline]
     fn as_ptr(&self) -> *mut T {
-        if mem::size_of::<T>() == 0 {
-            // Just return an arbitrary ZST pointer which is properly aligned
-            std::ptr::dangling_mut::<T>()
-        } else {
-            unsafe { self.ptr.as_ptr().sub(1) }
-        }
+        unsafe { self.ptr.as_ptr().sub(1) }
     }
     #[inline]
     unsafe fn next_n(&self, offset: usize) -> Self {
         unsafe {
-            let ptr = if mem::size_of::<T>() == 0 {
-                (self.ptr.as_ptr() as usize + offset) as *mut T
-            } else {
-                self.ptr.as_ptr().sub(offset)
-            };
             Self {
-                ptr: NonNull::new_unchecked(ptr),
+                ptr: NonNull::new_unchecked(self.ptr.as_ptr().sub(offset)),
             }
         }
     }
