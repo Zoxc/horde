@@ -71,8 +71,8 @@ pub struct SyncPushVec<T> {
     // A linked list of retired tables
     retired: Cell<TableRef<T>>,
 
-    // Tell dropck that we own instances of T.
-    marker: PhantomData<T>,
+    // Mark `T` as invariant and tell dropck that we own instances of `T`.
+    marker: PhantomData<(T, fn(T) -> T)>,
 }
 
 struct TableInfo {

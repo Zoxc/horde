@@ -161,8 +161,8 @@ pub struct SyncTable<K, V, S = DefaultHashBuilder> {
     // A linked list of retired tables
     retired: Cell<TableInfoRef>,
 
-    // Tell dropck that we own instances of K, V.
-    marker: PhantomData<(K, V)>,
+    // Mark `K` and `V` as invariant and tell dropck that we own instances of `K` and `V`.
+    marker: PhantomData<(K, V, fn(K, V) -> (K, V))>,
 }
 
 struct TableInfo {
