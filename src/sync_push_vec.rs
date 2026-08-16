@@ -3,7 +3,7 @@
 use crate::{
     collect::{self, Pin},
     scopeguard::guard,
-    util::{SyncUnsafeCell, align_up, unlikely},
+    util::{StaticUnsafeCell, align_up, unlikely},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
@@ -144,14 +144,18 @@ impl<T> TableRef<T> {
 
         const EMPTY_REF: *mut TableInfo = unsafe { (&raw const (*EMPTY.0.get()).info).cast_mut() };
 
-        static EMPTY: SyncUnsafeCell<EmptyTable> = SyncUnsafeCell::new(EmptyTable {
-            info: TableInfo {
-                capacity: 0,
-                items: AtomicUsize::new(0),
-                can_free: AtomicBool::new(false),
-                next_retired: Cell::new(EMPTY_REF),
-            },
-        });
+        // SAFETY: The `next_retired` `Cell` of the static table is never accessed;
+        // `RetiredIter` stops at it and it is never retired itself.
+        static EMPTY: StaticUnsafeCell<EmptyTable> = unsafe {
+            StaticUnsafeCell::new(EmptyTable {
+                info: TableInfo {
+                    capacity: 0,
+                    items: AtomicUsize::new(0),
+                    can_free: AtomicBool::new(false),
+                    next_retired: Cell::new(EMPTY_REF),
+                },
+            })
+        };
 
         Self {
             data: unsafe { NonNull::new_unchecked(EMPTY_REF) },

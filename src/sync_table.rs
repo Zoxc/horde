@@ -6,7 +6,7 @@ use crate::{
     collect::{self, Pin, pin},
     raw::{bitmask::BitMask, imp::Group},
     scopeguard::guard,
-    util::{SyncUnsafeCell, align_up, cold_path, likely, make_insert_hash, unlikely},
+    util::{StaticUnsafeCell, align_up, cold_path, likely, make_insert_hash, unlikely},
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
@@ -379,16 +379,20 @@ impl TableInfoRef {
         const EMPTY_TABLE_REF: TableInfoRef =
             unsafe { TableInfoRef::new((&raw const (*EMPTY_TABLE.0.get()).info).cast_mut()) };
 
-        static EMPTY_TABLE: SyncUnsafeCell<EmptyTable> = SyncUnsafeCell::new(EmptyTable {
-            info: TableInfo {
-                bucket_mask: 0,
-                growth_left: AtomicUsize::new(0),
-                tombstones: AtomicUsize::new(0),
-                can_free: AtomicBool::new(false),
-                next_retired: Cell::new(EMPTY_TABLE_REF),
-            },
-            control_bytes: [Group::EMPTY; 2],
-        });
+        // SAFETY: The `next_retired` `Cell` of the static table is never accessed;
+        // `RetiredIter` stops at it and it is never retired itself.
+        static EMPTY_TABLE: StaticUnsafeCell<EmptyTable> = unsafe {
+            StaticUnsafeCell::new(EmptyTable {
+                info: TableInfo {
+                    bucket_mask: 0,
+                    growth_left: AtomicUsize::new(0),
+                    tombstones: AtomicUsize::new(0),
+                    can_free: AtomicBool::new(false),
+                    next_retired: Cell::new(EMPTY_TABLE_REF),
+                },
+                control_bytes: [Group::EMPTY; 2],
+            })
+        };
 
         EMPTY_TABLE_REF
     }

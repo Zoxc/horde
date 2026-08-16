@@ -63,13 +63,17 @@ pub(crate) fn align_up(value: usize, align: usize) -> Option<usize> {
         .map(|value| value & !(align - 1))
 }
 
+/// An [UnsafeCell] for use in a `static` whose non-`Sync` parts are never accessed.
 #[repr(transparent)]
-pub(crate) struct SyncUnsafeCell<T>(pub(crate) UnsafeCell<T>);
+pub(crate) struct StaticUnsafeCell<T>(pub(crate) UnsafeCell<T>);
 
-impl<T> SyncUnsafeCell<T> {
-    pub(crate) const fn new(value: T) -> Self {
+impl<T> StaticUnsafeCell<T> {
+    /// # Safety
+    /// Any part of `value` which is not `Sync` must never be accessed.
+    pub(crate) const unsafe fn new(value: T) -> Self {
         Self(UnsafeCell::new(value))
     }
 }
 
-unsafe impl<T> Sync for SyncUnsafeCell<T> {}
+// SAFETY: Upheld by the caller of `new`.
+unsafe impl<T> Sync for StaticUnsafeCell<T> {}
