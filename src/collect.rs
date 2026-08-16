@@ -143,11 +143,8 @@ impl Drop for ExitGuard {
     }
 }
 
-cfg_if! {
-    if #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        not(miri)
-    ))] {
+cfg_select! {
+    all(any(target_arch = "x86", target_arch = "x86_64"), not(miri)) => {
         #[inline]
         #[allow(clippy::pointers_in_nomem_asm_block)]
         fn hide(data: &Data) -> &Data {
@@ -160,7 +157,8 @@ cfg_if! {
                 &*data
             }
         }
-    } else {
+    }
+    _ => {
         #[inline]
         fn hide(data: &Data) -> &Data {
             data

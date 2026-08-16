@@ -1,6 +1,20 @@
 use core::hash::{BuildHasher, Hash};
 use std::cell::UnsafeCell;
 
+#[allow(dead_code)]
+pub(crate) const NO_ASM: bool = cfg_select! {
+    feature = "nightly" => {
+        cfg!(any(
+            miri,
+            sanitize = "address",
+            sanitize = "hwaddress",
+            sanitize = "memory",
+            sanitize = "thread"
+        ))
+    }
+    _ => { cfg!(miri) }
+};
+
 #[inline]
 pub(crate) fn likely(value: bool) -> bool {
     #[cfg(feature = "nightly")]

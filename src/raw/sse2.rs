@@ -1,7 +1,9 @@
 use super::EMPTY;
 use super::bitmask::BitMask;
+use crate::util::NO_ASM;
 use core::arch::asm;
 use core::mem;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86;
@@ -43,10 +45,25 @@ impl Group {
         unsafe { mem::transmute(ALIGNED_BYTES) }
     };
 
+    #[inline]
+    unsafe fn load_bytes(ptr: *const u8) -> Self {
+        unsafe {
+            let mut bytes = [0_u8; Group::WIDTH];
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                *byte = (*ptr.add(i).cast::<AtomicU8>()).load(Ordering::Acquire);
+            }
+            mem::transmute(bytes)
+        }
+    }
+
     /// Loads a group of bytes starting at the given address.
     #[inline]
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
+            if NO_ASM {
+                return Group::load_bytes(ptr);
+            }
+
             // Use assembly to load `Group::WIDTH` bytes. These loads can shear,
             // but we only care about coherent individual bytes.
             // We use this instead of individual atomic byte loads to improve performance.
@@ -71,6 +88,10 @@ impl Group {
         unsafe {
             // FIXME: use is_aligned_to once it stabilizes
             debug_assert_eq!(ptr.align_offset(mem::align_of::<Self>()), 0);
+
+            if NO_ASM {
+                return Group::load_bytes(ptr);
+            }
 
             // Use assemby to load for similar reasons as in `load`.
             let result;

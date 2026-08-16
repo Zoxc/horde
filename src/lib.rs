@@ -3,12 +3,9 @@
 
 #![cfg_attr(
     feature = "nightly",
-    feature(dropck_eyepatch, extend_one, likely_unlikely)
+    feature(cfg_sanitize, dropck_eyepatch, extend_one, likely_unlikely)
 )]
 #![allow(clippy::len_without_is_empty, clippy::type_complexity)]
-
-#[macro_use]
-mod macros;
 
 pub mod collect;
 mod raw;

@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.horde]
 path = ".."
+features = ["nightly"]
 
 [[bin]]
 name = "sync_table"
