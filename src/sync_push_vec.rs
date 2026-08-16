@@ -204,18 +204,18 @@ impl<T> TableRef<T> {
         let info =
             unsafe { NonNull::new_unchecked(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
 
-        let mut result = Self {
+        let result = Self {
             data: info,
             marker: PhantomData,
         };
 
         unsafe {
-            *result.info_mut() = TableInfo {
+            result.data.as_ptr().write(TableInfo {
                 capacity,
                 items: AtomicUsize::new(0),
                 can_free: AtomicBool::new(false),
                 next_retired: Cell::new(TableRef::<T>::empty().data.as_ptr()),
-            };
+            });
         }
 
         result

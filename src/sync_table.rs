@@ -485,19 +485,19 @@ impl<T> TableRef<T> {
 
         let info = unsafe { TableInfoRef::new(ptr.as_ptr().add(info_offset) as *mut TableInfo) };
 
-        let mut result = Self {
+        let result = Self {
             info,
             marker: PhantomData,
         };
 
         unsafe {
-            *result.info_mut() = TableInfo {
+            result.info.as_ptr().write(TableInfo {
                 bucket_mask: bucket_count - 1,
                 growth_left: AtomicUsize::new(bucket_mask_to_capacity(bucket_count - 1)),
                 tombstones: AtomicUsize::new(0),
                 can_free: AtomicBool::new(false),
                 next_retired: Cell::new(TableInfoRef::empty()),
-            };
+            });
 
             result
                 .info
