@@ -196,7 +196,7 @@ pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
         let state = data.state.get();
         let old_state = if unlikely(!matches!(state, State::Registered | State::Pinned)) {
             pin_cold();
-            // `data.state` wlll always be `Registered` after `pin_cold`.
+            // `data.state` will always be `Registered` after `pin_cold`.
             // This avoids a load from `data.state`.
             State::Registered
         } else {
@@ -255,7 +255,7 @@ pub fn release() {
 
 /// Signals a quiescent state where garbage may be collected.
 ///
-/// This may collect garbage using the callbacks registered in [Pin::defer_unchecked](struct.Pin.html#method.defer_unchecked).
+/// This may collect garbage using the callbacks registered with [defer] and [defer_unchecked].
 ///
 /// This may panic if called while a thread is pinned or if called from a deferred callback.
 pub fn collect() {
@@ -289,7 +289,7 @@ fn collect_cold() {
     data(|data| {
         assert_collect_state(data);
 
-        // Update seen events after `assert_collect_state` in it panics.
+        // Update seen events after `assert_collect_state` in case it panics.
         // This allows future `collect` to continue if we resume execution after the panic.
         data.seen_events.set(EVENTS.load(Ordering::Relaxed));
 
@@ -343,7 +343,8 @@ struct Callbacks {
     defer_by_id: Vec<*const AtomicBool>,
 }
 
-// SAFETY: `AtomicBool` is safe to send
+// SAFETY: The `*const AtomicBool` pointers are only ever stored to, and it is the
+// `defer_by_id` caller's obligation to keep them valid until then, on any thread.
 unsafe impl Send for Callbacks {}
 
 impl Callbacks {
