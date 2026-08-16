@@ -60,8 +60,12 @@ pub fn defer(f: impl FnOnce() + Send + 'static) {
 /// [cancel_by_ids] can be used to prevent writes for matching pointers.
 ///
 /// # Safety
+///
 /// The caller must ensure `ready` remains valid until it is set to `true` by the collector or the
 /// store is cancelled using [cancel_by_ids].
+///
+/// A pointer must not be scheduled again until a previous registration of it has been observed
+/// to be writen as `true` by the collector or cancelled.
 pub(crate) unsafe fn defer_by_id(ready: *const AtomicBool) {
     COLLECTOR.lock().defer_by_id(ready);
 }
@@ -342,6 +346,7 @@ impl Callbacks {
     }
 
     fn push_id(&mut self, ready: *const AtomicBool) {
+        debug_assert!(!self.defer_by_id.contains(&ready));
         self.defer_by_id.push(ready);
     }
 
@@ -472,6 +477,9 @@ impl Collector {
     }
 
     fn defer_by_id(&mut self, ready: *const AtomicBool) {
+        debug_assert!(!self.pending.defer_by_id.contains(&ready));
+        debug_assert!(!self.previous_deferred.defer_by_id.contains(&ready));
+
         self.current_deferred.push_id(ready);
         EVENTS.fetch_add(1, Ordering::Release);
     }
