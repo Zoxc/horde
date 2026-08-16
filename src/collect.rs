@@ -319,7 +319,13 @@ fn collect_cold() {
             if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| {
                 callback();
             })) {
-                panic = Some(payload);
+                // Keep the first payload and drop the rest inside `catch_unwind`, so a
+                // panicking payload destructor cannot skip the remaining callbacks.
+                if panic.is_none() {
+                    panic = Some(payload);
+                } else {
+                    let _ = panic::catch_unwind(AssertUnwindSafe(move || drop(payload)));
+                }
             }
         }
 
