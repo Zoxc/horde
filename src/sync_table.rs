@@ -843,7 +843,8 @@ impl<K, V, S> SyncTable<K, V, S> {
     /// Creates a [Write] handle without checking for exclusive access.
     ///
     /// # Safety
-    /// It's up to the caller to ensure only one thread writes to the vector at a time.
+    ///
+    /// It's up to the caller to ensure only one [Write] handle exists at a time, across all threads.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, K, V, S> {
         Write::new_and_prune(self)

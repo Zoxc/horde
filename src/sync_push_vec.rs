@@ -436,7 +436,8 @@ impl<T> SyncPushVec<T> {
     /// Creates a [Write] handle without checking for exclusive access.
     ///
     /// # Safety
-    /// It's up to the caller to ensure only one thread writes to the vector at a time.
+    ///
+    /// It's up to the caller to ensure only one [Write] handle exists at a time, across all threads.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T> {
         Write::new(self)
