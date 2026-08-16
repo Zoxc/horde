@@ -4,7 +4,9 @@
 //! section. Destruction of removed data is postponed with [defer_unchecked] and later driven by
 //! [collect], which advances the global quiescent-state cycle.
 //!
-//! Long-lived threads that stop interacting with lock-free structures should call [release] so
+//! Threads which call [pin] will participate in global memory reclamation and should
+//! regularly call [collect] to allow memory reclamation to progress.
+//! When threads are unable to do so, for example due to sleeping, they should call [release] so
 //! they no longer delay reclamation.
 
 use crate::{
