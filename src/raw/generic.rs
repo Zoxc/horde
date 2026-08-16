@@ -65,6 +65,9 @@ impl Group {
     };
 
     /// Loads a group of bytes starting at the given address.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for reads of `Group::WIDTH` bytes.
     #[inline]
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
@@ -78,6 +81,10 @@ impl Group {
 
     /// Loads a group of bytes starting at the given address, which must be
     /// aligned to `mem::align_of::<Group>()`.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for reads of `Group::WIDTH` bytes and aligned to
+    /// `mem::align_of::<Group>()`.
     #[inline]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
         // FIXME: use is_aligned_to once it stabilizes
