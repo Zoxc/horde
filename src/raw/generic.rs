@@ -6,18 +6,14 @@ use core::sync::atomic::{AtomicU8, Ordering};
 // Use the native word size as the group size. Using a 64-bit group size on
 // a 32-bit architecture will just end up being more expensive because
 // shifts and multiplies will need to be emulated.
-#[cfg(any(
-    target_pointer_width = "64",
-    target_arch = "aarch64",
-    target_arch = "x86_64",
-))]
-type GroupWord = u64;
-#[cfg(all(
-    target_pointer_width = "32",
-    not(target_arch = "aarch64"),
-    not(target_arch = "x86_64"),
-))]
-type GroupWord = u32;
+type GroupWord = cfg_select! {
+    any(
+        target_pointer_width = "64",
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+    ) => { u64 }
+    _ => { u32 }
+};
 
 pub type BitMaskWord = GroupWord;
 pub const BITMASK_STRIDE: usize = 8;
