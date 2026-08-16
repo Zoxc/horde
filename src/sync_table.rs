@@ -1109,18 +1109,21 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
 
             unsafe {
                 let buckets = table.info().buckets();
+                let hash_builder = self.hash_builder.clone();
 
                 SyncTable {
-                    hash_builder: self.hash_builder.clone(),
                     current: AtomicPtr::new(
                         if table.info().bucket_mask > 0 {
-                            table.clone_table(&self.hash_builder, buckets, hasher)
+                            // Hash with the new hash builder as it
+                            // may not be equivalent to the old
+                            table.clone_table(&hash_builder, buckets, hasher)
                         } else {
                             TableRef::empty()
                         }
                         .info
                         .as_ptr(),
                     ),
+                    hash_builder,
                     retired: Cell::new(TableInfoRef::empty()),
                     marker: PhantomData,
                     lock: Mutex::new(()),
