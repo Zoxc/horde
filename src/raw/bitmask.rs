@@ -25,10 +25,12 @@ impl BitMask {
     }
 
     /// Returns a new `BitMask` with the lowest bit removed.
+    ///
+    /// Returns an empty mask if there is no set bit.
     #[inline]
     #[must_use]
     pub fn remove_lowest_bit(self) -> Self {
-        BitMask(self.0 & (self.0 - 1))
+        BitMask(self.0 & self.0.wrapping_sub(1))
     }
     /// Returns whether the `BitMask` has at least one set bit.
     #[inline]
