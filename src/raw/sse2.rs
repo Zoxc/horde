@@ -47,15 +47,17 @@ impl Group {
     #[inline]
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
-            // Use assembly to load individual atomic bytes with acquire ordering.
-            // These loads can shear, but we only care about coherent individual bytes.
+            // Use assembly to load `Group::WIDTH` bytes. These loads can shear,
+            // but we only care about coherent individual bytes.
             // We use this instead of individual atomic byte loads to improve performance.
+            // From the perspective of the abstract machine,
+            // these are individual atomic byte loads with acquire ordering.
             let result;
             asm!(
                 "movdqu {result}, xmmword ptr [{ptr}]",
                 ptr = in(reg) ptr,
                 result = lateout(xmm_reg) result,
-                options(readonly, nostack, preserves_flags)
+                options(nostack, preserves_flags)
             );
 
             Group(result)
@@ -70,15 +72,13 @@ impl Group {
             // FIXME: use is_aligned_to once it stabilizes
             debug_assert_eq!(ptr.align_offset(mem::align_of::<Self>()), 0);
 
-            // Use assembly to load individual atomic bytes with acquire ordering.
-            // These loads can shear, but we only care about coherent individual bytes.
-            // We use this instead of individual atomic byte loads to improve performance.
+            // Use assemby to load for similar reasons as in `load`.
             let result;
             asm!(
                 "movdqa {result}, xmmword ptr [{ptr}]",
                 ptr = in(reg) ptr,
                 result = lateout(xmm_reg) result,
-                options(readonly, nostack, preserves_flags)
+                options(nostack, preserves_flags)
             );
 
             Group(result)
