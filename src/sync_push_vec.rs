@@ -13,7 +13,6 @@ use std::{
     iter::FromIterator,
     marker::PhantomData,
     mem,
-    ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 use std::{cmp, ptr::slice_from_raw_parts, sync::atomic::AtomicUsize};
@@ -42,23 +41,31 @@ pub struct Write<'a, T> {
 
 /// A handle to a [SyncPushVec] with write access protected by a lock.
 pub struct LockedWrite<'a, T> {
-    table: Write<'a, T>,
+    table: &'a SyncPushVec<T>,
     _guard: MutexGuard<'a, ()>,
 }
 
-impl<'a, T> Deref for LockedWrite<'a, T> {
-    type Target = Write<'a, T>;
-
+impl<'a, T> LockedWrite<'a, T> {
     #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.table
+    fn new(table: &'a SyncPushVec<T>, guard: MutexGuard<'a, ()>) -> Self {
+        let mut lock = LockedWrite {
+            table,
+            _guard: guard,
+        };
+        lock.write().try_prune_tables();
+        lock
     }
-}
 
-impl<'a, T> DerefMut for LockedWrite<'a, T> {
+    /// Creates a [Write] handle which gives access to write operations.
     #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.table
+    pub fn write(&mut self) -> Write<'_, T> {
+        Write { table: self.table }
+    }
+
+    /// Creates a [Read] handle which gives access to read operations.
+    #[inline]
+    pub fn read(&self) -> Read<'_, T> {
+        Read { table: self.table }
     }
 }
 
@@ -445,12 +452,8 @@ impl<T> SyncPushVec<T> {
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, T> {
         let guard = self.lock.lock();
-        let table = Write::new(self);
 
-        LockedWrite {
-            table,
-            _guard: guard,
-        }
+        LockedWrite::new(self, guard)
     }
 
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
@@ -462,12 +465,7 @@ impl<T> SyncPushVec<T> {
             MutexGuard::mutex(&guard) as *const _
         );
 
-        let table = Write::new(self);
-
-        LockedWrite {
-            table,
-            _guard: guard,
-        }
+        LockedWrite::new(self, guard)
     }
 
     /// Extracts a mutable slice of the entire vector.

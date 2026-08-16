@@ -105,7 +105,8 @@ fn apply_potential_insert(
                 slot
             };
 
-            let mut write = table.lock();
+            let mut lock = table.lock();
+            let mut write = lock.write();
 
             let inserted = if mode & 0b1000 != 0 {
                 write.reserve_one();
@@ -147,7 +148,7 @@ fn fuzz_sync_table(data: &[u8]) {
         match op % 9 {
             0 => {
                 let hash = maybe_hash(&table, key, input.next_bool());
-                let inserted = table.lock().insert(key, value, hash);
+                let inserted = table.lock().write().insert(key, value, hash);
                 let expected = model[index].is_none();
 
                 assert_eq!(inserted, expected);
@@ -159,7 +160,8 @@ fn fuzz_sync_table(data: &[u8]) {
                 let hash = maybe_hash(&table, key, input.next_bool());
 
                 if model[index].is_none() {
-                    let mut write = table.lock();
+                    let mut lock = table.lock();
+                    let mut write = lock.write();
                     let inserted = write.insert_new(key, value, hash);
                     assert_eq!((*inserted.0, *inserted.1), (key, value));
                     model[index] = Some(value);
@@ -176,6 +178,7 @@ fn fuzz_sync_table(data: &[u8]) {
                 let hash = maybe_hash(&table, key, input.next_bool());
                 let removed = table
                     .lock()
+                    .write()
                     .remove(&key, hash)
                     .map(|(key, value)| (*key, *value));
                 let expected = model[index].take().map(|value| (key, value));
@@ -195,7 +198,7 @@ fn fuzz_sync_table(data: &[u8]) {
 
                 let items = model_snapshot(&replacement);
                 let item_count = items.len();
-                table.lock().replace(items, capacity);
+                table.lock().write().replace(items, capacity);
                 model = replacement;
 
                 pin(|pin| {
@@ -231,7 +234,7 @@ fn fuzz_sync_table(data: &[u8]) {
                 assert_table_matches(&cloned, &model);
             }
             8 => {
-                table.lock().reserve_one();
+                table.lock().write().reserve_one();
             }
             _ => unreachable!(),
         }

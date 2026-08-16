@@ -77,9 +77,9 @@ fn test_insert() {
     let _test = enter_test();
     let m = SyncPushVec::new();
     assert_eq!(m.lock().read().len(), 0);
-    m.lock().push(2);
+    m.lock().write().push(2);
     assert_eq!(m.lock().read().len(), 1);
-    m.lock().push(5);
+    m.lock().write().push(5);
     assert_eq!(m.lock().read().len(), 2);
     assert_eq!(m.lock().read().as_slice()[0], 2);
     assert_eq!(m.lock().read().as_slice()[1], 5);
@@ -88,15 +88,47 @@ fn test_insert() {
 }
 
 #[test]
+fn swapped_locks_keep_their_guards() {
+    let _test = enter_test();
+    let a = SyncPushVec::new();
+    let b = SyncPushVec::new();
+
+    let mut lock_a = a.lock();
+    let mut lock_b = b.lock();
+
+    // Swapping whole `LockedWrite`s is harmless since each guard moves along with the
+    // vector it protects.
+    mem::swap(&mut lock_a, &mut lock_b);
+
+    assert!(a.mutex().is_locked());
+    assert!(b.mutex().is_locked());
+
+    // `lock_a` now holds `b`'s guard and writes to `b`.
+    lock_a.write().push(1);
+    drop(lock_a);
+    assert!(!b.mutex().is_locked());
+    assert!(a.mutex().is_locked());
+
+    lock_b.write().push(2);
+    drop(lock_b);
+    assert!(!a.mutex().is_locked());
+
+    assert_eq!(b.lock().read().as_slice(), [1]);
+    assert_eq!(a.lock().read().as_slice(), [2]);
+
+    release();
+}
+
+#[test]
 fn test_replace() {
     let _test = enter_test();
     let m = SyncPushVec::new();
-    m.lock().push(2);
-    m.lock().push(5);
+    m.lock().write().push(2);
+    m.lock().write().push(5);
     assert_eq!(m.lock().read().as_slice(), [2, 5]);
-    m.lock().replace(vec![3], 0);
+    m.lock().write().replace(vec![3], 0);
     assert_eq!(m.lock().read().as_slice(), [3]);
-    m.lock().replace(vec![], 0);
+    m.lock().write().replace(vec![], 0);
     assert_eq!(m.lock().read().as_slice(), []);
     release();
 }
@@ -105,7 +137,7 @@ fn test_replace() {
 fn test_replace_empty_preserves_requested_capacity() {
     let _test = enter_test();
     let m = SyncPushVec::new();
-    m.lock().replace(Vec::<i32>::new(), 8);
+    m.lock().write().replace(Vec::<i32>::new(), 8);
     assert_eq!(m.lock().read().as_slice(), []);
     assert_eq!(m.lock().read().capacity(), 8);
     release();
@@ -127,8 +159,8 @@ fn replace_then_forget_leaks_retired_elements() {
     let drops = Arc::new(AtomicUsize::new(0));
     let vector = SyncPushVec::with_capacity(1);
 
-    vector.lock().push(DropCounter(drops.clone()));
-    vector.lock().replace(Vec::<DropCounter>::new(), 0);
+    vector.lock().write().push(DropCounter(drops.clone()));
+    vector.lock().write().replace(Vec::<DropCounter>::new(), 0);
 
     mem::forget(vector);
 
@@ -147,7 +179,7 @@ fn test_expand() {
     let mut i = 0;
     let old_raw_cap = m.lock().read().capacity();
     while old_raw_cap == m.lock().read().capacity() {
-        m.lock().push(i);
+        m.lock().write().push(i);
         i += 1;
     }
 

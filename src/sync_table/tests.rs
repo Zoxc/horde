@@ -39,7 +39,7 @@ fn high_align() {
 
     table.get_mut(&A(1), None);
 
-    table.lock().insert_new(A(1), 1, None);
+    table.lock().write().insert_new(A(1), 1, None);
 
     release();
 }
@@ -49,9 +49,9 @@ fn low_align_with_padding_before_table_info() {
     let _test = enter_test();
     let m = SyncTable::<u8, ()>::new();
 
-    assert!(m.lock().insert(1, (), None));
-    assert!(m.lock().insert(2, (), None));
-    assert!(m.lock().insert(3, (), None));
+    assert!(m.lock().write().insert(1, (), None));
+    assert!(m.lock().write().insert(2, (), None));
+    assert!(m.lock().write().insert(3, (), None));
 
     let write = m.lock();
     let read = write.read();
@@ -68,7 +68,7 @@ fn test_create_capacity_zero() {
     let _test = enter_test();
     let m = SyncTable::new_with(RandomState::new(), 0);
 
-    assert!(m.lock().insert(1, 1, None));
+    assert!(m.lock().write().insert(1, 1, None));
 
     assert!(m.lock().read().get(&1, None).is_some());
     assert!(m.lock().read().get(&0, None).is_none());
@@ -91,13 +91,13 @@ fn clone_empty_reuses_static_table() {
 fn test_replace() {
     let _test = enter_test();
     let m = SyncTable::new();
-    m.lock().insert(2, 7, None);
-    m.lock().insert(5, 3, None);
-    m.lock().replace(vec![(3, 4)], 0);
+    m.lock().write().insert(2, 7, None);
+    m.lock().write().insert(5, 3, None);
+    m.lock().write().replace(vec![(3, 4)], 0);
     assert_eq!(*m.lock().read().get(&3, None).unwrap().1, 4);
     assert_eq!(m.lock().read().get(&2, None), None);
     assert_eq!(m.lock().read().get(&5, None), None);
-    m.lock().replace(vec![], 0);
+    m.lock().write().replace(vec![], 0);
     assert_eq!(m.lock().read().get(&3, None), None);
     assert_eq!(m.lock().read().get(&2, None), None);
     assert_eq!(m.lock().read().get(&5, None), None);
@@ -109,7 +109,7 @@ fn replace_empty_preserves_requested_capacity() {
     let _test = enter_test();
     let m = SyncTable::<i32, i32>::new();
 
-    m.lock().replace(Vec::new(), 100);
+    m.lock().write().replace(Vec::new(), 100);
 
     pin(|pin| {
         assert_eq!(m.read(pin).len(), 0);
@@ -138,9 +138,13 @@ fn replace_then_forget_leaks_retired_values() {
     assert!(
         table
             .lock()
+            .write()
             .insert(1usize, DropCounter(drops.clone()), None)
     );
-    table.lock().replace(Vec::<(usize, DropCounter)>::new(), 0);
+    table
+        .lock()
+        .write()
+        .replace(Vec::<(usize, DropCounter)>::new(), 0);
 
     mem::forget(table);
 
@@ -149,14 +153,48 @@ fn replace_then_forget_leaks_retired_values() {
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
+/// Swapping whole `LockedWrite`s is the one detaching operation that still compiles.
+/// It's harmless since each guard moves along with the table it protects.
+#[test]
+fn swapped_locks_keep_their_guards() {
+    let _test = enter_test();
+    let a = SyncTable::new();
+    let b = SyncTable::new();
+
+    let mut lock_a = a.lock();
+    let mut lock_b = b.lock();
+
+    mem::swap(&mut lock_a, &mut lock_b);
+
+    assert!(a.mutex().is_locked());
+    assert!(b.mutex().is_locked());
+
+    // `lock_a` now holds `b`'s guard and writes to `b`.
+    lock_a.write().insert(1, 1, None);
+    drop(lock_a);
+    assert!(!b.mutex().is_locked());
+    assert!(a.mutex().is_locked());
+
+    lock_b.write().insert(2, 2, None);
+    drop(lock_b);
+    assert!(!a.mutex().is_locked());
+
+    assert_eq!(b.lock().read().get(&1, None).map(|(_, v)| *v), Some(1));
+    assert_eq!(a.lock().read().get(&2, None).map(|(_, v)| *v), Some(2));
+    assert_eq!(a.lock().read().get(&1, None), None);
+    assert_eq!(b.lock().read().get(&2, None), None);
+
+    release();
+}
+
 #[test]
 fn test_remove() {
     let _test = enter_test();
     let m = SyncTable::new();
-    m.lock().insert(2, 7, None);
-    m.lock().insert(5, 3, None);
-    m.lock().remove(&2, None);
-    m.lock().remove(&5, None);
+    m.lock().write().insert(2, 7, None);
+    m.lock().write().insert(5, 3, None);
+    m.lock().write().remove(&2, None);
+    m.lock().write().remove(&5, None);
     assert_eq!(m.lock().read().get(&2, None), None);
     assert_eq!(m.lock().read().get(&5, None), None);
     assert_eq!(m.lock().read().len(), 0);
@@ -182,11 +220,18 @@ fn remove_drops_values_after_reclamation() {
     assert!(
         table
             .lock()
+            .write()
             .insert(1usize, DropCounter(drops.clone()), None)
     );
-    assert_eq!(table.lock().remove(&1usize, None).map(|(k, _)| *k), Some(1));
+    assert_eq!(
+        table.lock().write().remove(&1usize, None).map(|(k, _)| *k),
+        Some(1)
+    );
 
-    table.lock().replace(Vec::<(usize, DropCounter)>::new(), 0);
+    table
+        .lock()
+        .write()
+        .replace(Vec::<(usize, DropCounter)>::new(), 0);
     for _ in 0..4 {
         release();
         crate::collect::collect();
@@ -202,9 +247,9 @@ fn test_insert() {
     let _test = enter_test();
     let m = SyncTable::new();
     assert_eq!(m.lock().read().len(), 0);
-    assert!(m.lock().insert(1, 2, None));
+    assert!(m.lock().write().insert(1, 2, None));
     assert_eq!(m.lock().read().len(), 1);
-    assert!(m.lock().insert(2, 4, None));
+    assert!(m.lock().write().insert(2, 4, None));
     assert_eq!(m.lock().read().len(), 2);
     assert_eq!(*m.lock().read().get(&1, None).unwrap().1, 2);
     assert_eq!(*m.lock().read().get(&2, None).unwrap().1, 4);
@@ -243,7 +288,7 @@ fn concurrent_get_and_insert() {
 
         scope.spawn(|| {
             barrier.wait();
-            assert!(table.lock().insert(1, 2, None));
+            assert!(table.lock().write().insert(1, 2, None));
             barrier.wait();
         });
     });
@@ -257,7 +302,7 @@ fn concurrent_get_and_remove() {
     let table = SyncTable::new();
     let barrier = Barrier::new(2);
 
-    assert!(table.lock().insert(1, 2, None));
+    assert!(table.lock().write().insert(1, 2, None));
 
     thread::scope(|scope| {
         scope.spawn(|| {
@@ -282,7 +327,11 @@ fn concurrent_get_and_remove() {
         scope.spawn(|| {
             barrier.wait();
             assert_eq!(
-                table.lock().remove(&1, None).map(|(_, value)| *value),
+                table
+                    .lock()
+                    .write()
+                    .remove(&1, None)
+                    .map(|(_, value)| *value),
                 Some(2)
             );
             barrier.wait();
@@ -325,12 +374,16 @@ fn concurrent_insert_remove_and_get() {
 
         scope.spawn(|| {
             barrier.wait();
-            assert!(table.lock().insert(1, 2, None));
+            assert!(table.lock().write().insert(1, 2, None));
             assert_eq!(
-                table.lock().remove(&1, None).map(|(_, value)| *value),
+                table
+                    .lock()
+                    .write()
+                    .remove(&1, None)
+                    .map(|(_, value)| *value),
                 Some(2)
             );
-            assert!(table.lock().insert(2, 4, None));
+            assert!(table.lock().write().insert(2, 4, None));
             barrier.wait();
         });
     });
@@ -342,10 +395,10 @@ fn concurrent_insert_remove_and_get() {
 fn test_iter() {
     let _test = enter_test();
     let m = SyncTable::new();
-    assert!(m.lock().insert(1, 2, None));
-    assert!(m.lock().insert(5, 3, None));
-    assert!(m.lock().insert(2, 4, None));
-    assert!(m.lock().insert(9, 4, None));
+    assert!(m.lock().write().insert(1, 2, None));
+    assert!(m.lock().write().insert(5, 3, None));
+    assert!(m.lock().write().insert(2, 4, None));
+    assert!(m.lock().write().insert(9, 4, None));
 
     pin(|pin| {
         let mut v: Vec<(i32, i32)> = m.read(pin).iter().map(|i| (*i.0, *i.1)).collect();
@@ -361,9 +414,9 @@ fn test_iter() {
 fn test_insert_conflicts() {
     let _test = enter_test();
     let m = SyncTable::new_with(RandomState::default(), 4);
-    assert!(m.lock().insert(1, 2, None));
-    assert!(m.lock().insert(5, 3, None));
-    assert!(m.lock().insert(9, 4, None));
+    assert!(m.lock().write().insert(1, 2, None));
+    assert!(m.lock().write().insert(5, 3, None));
+    assert!(m.lock().write().insert(9, 4, None));
     assert_eq!(*m.lock().read().get(&9, None).unwrap().1, 4);
     assert_eq!(*m.lock().read().get(&5, None).unwrap().1, 3);
     assert_eq!(*m.lock().read().get(&1, None).unwrap().1, 2);
@@ -381,7 +434,7 @@ fn test_expand() {
     let mut i = 0;
     let old_raw_cap = unsafe { m.current().info().buckets() };
     while old_raw_cap == unsafe { m.current().info().buckets() } {
-        m.lock().insert(i, i, None);
+        m.lock().write().insert(i, i, None);
         i += 1;
     }
 
@@ -395,7 +448,7 @@ fn test_find() {
     let _test = enter_test();
     let m = SyncTable::new();
     assert!(m.lock().read().get(&1, None).is_none());
-    m.lock().insert(1, 2, None);
+    m.lock().write().insert(1, 2, None);
     match m.lock().read().get(&1, None) {
         None => panic!(),
         Some(v) => assert_eq!(*v.1, 2),
@@ -411,7 +464,7 @@ fn test_capacity_not_less_than_len() {
     let mut item = 0;
 
     for _ in 0..116 {
-        a.lock().insert(item, 0, None);
+        a.lock().write().insert(item, 0, None);
         item += 1;
     }
 
@@ -420,14 +473,14 @@ fn test_capacity_not_less_than_len() {
 
         let free = a.read(pin).capacity() - a.read(pin).len();
         for _ in 0..free {
-            a.lock().insert(item, 0, None);
+            a.lock().write().insert(item, 0, None);
             item += 1;
         }
 
         assert_eq!(a.read(pin).len(), a.read(pin).capacity());
 
         // Insert at capacity should cause allocation.
-        a.lock().insert(item, 0, None);
+        a.lock().write().insert(item, 0, None);
         assert!(a.read(pin).capacity() > a.read(pin).len());
     });
 
@@ -439,7 +492,7 @@ fn rehash() {
     let _test = enter_test();
     let table = SyncTable::new();
     for i in 0..100 {
-        table.lock().insert_new(i, (), None);
+        table.lock().write().insert_new(i, (), None);
     }
 
     pin(|pin| {
@@ -472,7 +525,7 @@ fn test_interning(intern: impl Fn(&SyncTable<u64, u64>, u64, u64, Pin<'_>) -> bo
         s.write_u64(i);
         let s = s.finish();
         if s % 100 > (100 - HIT_RATE) {
-            test.lock().insert(i, i * 2, None);
+            test.lock().write().insert(i, i * 2, None);
             control.insert(i, i * 2);
         }
     }
@@ -503,7 +556,8 @@ fn intern_potential() {
             Err(p) => p,
         };
 
-        let mut write = table.lock();
+        let mut lock = table.lock();
+        let mut write = lock.write();
         match p.get(write.read(), &k, Some(hash)) {
             Some(v) => {
                 let _ = v.1;
@@ -528,7 +582,8 @@ fn intern_get_insert() {
             return true;
         }
 
-        let mut write = table.lock();
+        let mut lock = table.lock();
+        let mut write = lock.write();
         match write.read().get(&k, Some(hash)) {
             Some(_) => true,
             None => {
@@ -551,7 +606,8 @@ fn intern_potential_try() {
             Err(p) => p,
         };
 
-        let mut write = table.lock();
+        let mut lock = table.lock();
+        let mut write = lock.write();
 
         write.reserve_one();
 

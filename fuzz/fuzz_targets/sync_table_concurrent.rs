@@ -154,6 +154,7 @@ fn apply_step(table: &SyncTable<u8, u8>, step: &Step) {
         } => {
             let inserted = table
                 .lock()
+                .write()
                 .insert(*key, *value, maybe_hash(table, *key, *use_hash));
             assert_eq!(inserted, step.before[*key as usize].is_none());
         }
@@ -164,7 +165,8 @@ fn apply_step(table: &SyncTable<u8, u8>, step: &Step) {
         } => {
             if step.before[*key as usize].is_none() {
                 let hash = maybe_hash(table, *key, *use_hash);
-                let mut write = table.lock();
+                let mut lock = table.lock();
+                let mut write = lock.write();
                 let inserted = write.insert_new(*key, *value, hash);
                 assert_eq!((*inserted.0, *inserted.1), (*key, *value));
             }
@@ -172,6 +174,7 @@ fn apply_step(table: &SyncTable<u8, u8>, step: &Step) {
         Op::Remove { key, use_hash } => {
             let removed = table
                 .lock()
+                .write()
                 .remove(key, maybe_hash(table, *key, *use_hash))
                 .map(|(found_key, found_value)| (*found_key, *found_value));
             assert_eq!(
@@ -180,10 +183,10 @@ fn apply_step(table: &SyncTable<u8, u8>, step: &Step) {
             );
         }
         Op::Replace { items, capacity } => {
-            table.lock().replace(items.clone(), *capacity);
+            table.lock().write().replace(items.clone(), *capacity);
         }
         Op::ReserveOne => {
-            table.lock().reserve_one();
+            table.lock().write().reserve_one();
         }
     }
 }

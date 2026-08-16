@@ -75,7 +75,7 @@ fn find_test(table: &SyncTable<usize, usize>, val: usize, hash: u64) -> Option<u
 
 #[unsafe(no_mangle)]
 fn insert_test(table: &SyncTable<u64, u64>) {
-    table.lock().insert_new(5, 5, None);
+    table.lock().write().insert_new(5, 5, None);
 }
 
 #[unsafe(no_mangle)]
@@ -106,7 +106,8 @@ fn intern_triple_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>)
         None => (),
     };
 
-    let mut write = table.lock();
+    let mut lock = table.lock();
+    let mut write = lock.write();
     match write.read().get(&k, Some(hash)) {
         Some((_, v)) => *v,
         None => {
@@ -124,7 +125,8 @@ fn intern_try_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) ->
         Err(p) => p,
     };
 
-    let mut write = table.lock();
+    let mut lock = table.lock();
+    let mut write = lock.write();
     match p.get(write.read(), &k, Some(hash)) {
         Some((_, v)) => *v,
         None => {
@@ -142,7 +144,8 @@ fn intern_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64
         Err(p) => p,
     };
 
-    let mut write = table.lock();
+    let mut lock = table.lock();
+    let mut write = lock.write();
     match p.get(write.read(), &k, Some(hash)) {
         Some((_, v)) => *v,
         None => {
@@ -165,7 +168,8 @@ fn intern_refresh_test(
         Err(p) => p,
     };
 
-    let mut write = table.lock();
+    let mut lock = table.lock();
+    let mut write = lock.write();
 
     write.reserve_one();
 

@@ -10,6 +10,7 @@ use crate::{
 };
 use core::ptr::NonNull;
 use parking_lot::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicPtr, AtomicUsize};
 use std::{
     alloc::{Layout, alloc, dealloc, handle_alloc_error},
     cmp, fmt,
@@ -21,8 +22,6 @@ use std::{
 };
 use std::{borrow::Borrow, hash::Hash};
 use std::{cell::Cell, collections::hash_map::RandomState};
-use std::{ops::Deref, sync::atomic::AtomicPtr};
-use std::{ops::DerefMut, sync::atomic::AtomicUsize};
 
 mod code;
 mod tests;
@@ -125,23 +124,29 @@ pub struct Write<'a, K, V, S = DefaultHashBuilder> {
 
 /// A handle to a [SyncTable] with write access protected by a lock.
 pub struct LockedWrite<'a, K, V, S = DefaultHashBuilder> {
-    table: Write<'a, K, V, S>,
+    table: &'a SyncTable<K, V, S>,
     _guard: MutexGuard<'a, ()>,
 }
 
-impl<'a, K, V, S> Deref for LockedWrite<'a, K, V, S> {
-    type Target = Write<'a, K, V, S>;
-
+impl<'a, K, V, S> LockedWrite<'a, K, V, S> {
+    /// Creates a [Write] handle which gives access to write operations.
+    ///
+    /// This does not prune old tables.
     #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.table
+    pub fn write(&mut self) -> Write<'_, K, V, S> {
+        Write { table: self.table }
     }
-}
 
-impl<'a, K, V, S> DerefMut for LockedWrite<'a, K, V, S> {
+    /// Creates a [Read] handle which gives access to read operations.
     #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.table
+    pub fn read(&self) -> Read<'_, K, V, S> {
+        Read { table: self.table }
+    }
+
+    /// Returns a reference to the table's `BuildHasher`.
+    #[inline]
+    pub fn hasher(&self) -> &'a S {
+        &self.table.hash_builder
     }
 }
 
@@ -874,9 +879,9 @@ impl<K, V, S> SyncTable<K, V, S> {
     /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
     #[inline]
     pub fn lock(&self) -> LockedWrite<'_, K, V, S> {
-        let mut write = self.lock_no_prune();
-        write.prune();
-        write
+        let mut lock = self.lock_no_prune();
+        lock.write().prune();
+        lock
     }
 
     /// Creates a [LockedWrite] handle by taking the underlying mutex that protects writes.
@@ -886,10 +891,9 @@ impl<K, V, S> SyncTable<K, V, S> {
     #[inline]
     pub fn lock_no_prune(&self) -> LockedWrite<'_, K, V, S> {
         let guard = self.lock.lock();
-        let table = Write { table: self };
 
         LockedWrite {
-            table,
+            table: self,
             _guard: guard,
         }
     }
@@ -897,9 +901,9 @@ impl<K, V, S> SyncTable<K, V, S> {
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
     #[inline]
     pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, K, V, S> {
-        let mut write = self.lock_from_guard_no_prune(guard);
-        write.prune();
-        write
+        let mut lock = self.lock_from_guard_no_prune(guard);
+        lock.write().prune();
+        lock
     }
 
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
@@ -917,10 +921,8 @@ impl<K, V, S> SyncTable<K, V, S> {
             MutexGuard::mutex(&guard) as *const _
         );
 
-        let table = Write { table: self };
-
         LockedWrite {
-            table,
+            table: self,
             _guard: guard,
         }
     }
