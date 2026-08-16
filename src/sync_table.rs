@@ -373,7 +373,7 @@ impl TableInfoRef {
         #[repr(C)]
         struct EmptyTable {
             info: TableInfo,
-            control_bytes: Group,
+            control_bytes: [Group; 2], // 2 groups to fit Group::WIDTH + 1 bytes
         }
 
         const EMPTY_TABLE_REF: TableInfoRef =
@@ -387,7 +387,7 @@ impl TableInfoRef {
                 can_free: AtomicBool::new(false),
                 next_retired: Cell::new(EMPTY_TABLE_REF),
             },
-            control_bytes: Group::EMPTY,
+            control_bytes: [Group::EMPTY; 2],
         });
 
         EMPTY_TABLE_REF
