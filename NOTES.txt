@@ -4,6 +4,7 @@ Use `cargo miri test --target x86_64-unknown-linux-gnu` to run Miri on non-Linux
 
 Run
     - `cargo fuzz run sync_table`
+    - `cargo fuzz run sync_table_drop`
     - `cargo fuzz run sync_table_concurrent`
     - `cargo fuzz run --build-std -s thread sync_table_concurrent`
 in the `fuzz` folder to start fuzzing. It uses https://github.com/rust-fuzz/cargo-fuzz

@@ -61,6 +61,9 @@ struct Step {
     focus: u8,
     probe: u8,
     loops: usize,
+    /// Whether the readers hold a `PotentialSlot` across the racy window. Kept separate
+    /// from `loops` so it does not shadow the `loops` based reclamation cases.
+    potential: bool,
 }
 
 fn maybe_hash(table: &SyncTable<u8, u8>, key: u8, use_hash: bool) -> Option<u64> {
@@ -97,13 +100,16 @@ fn assert_table_matches(table: &SyncTable<u8, u8>, model: &Model) {
     });
 }
 
-fn interesting_keys(step: &Step) -> [u8; 3] {
-    let primary = match step.op {
+/// The key the step's operation acts on, or `focus` for the whole-table operations.
+fn primary_key(step: &Step) -> u8 {
+    match step.op {
         Op::Insert { key, .. } | Op::InsertNew { key, .. } | Op::Remove { key, .. } => key,
         Op::Replace { .. } | Op::ReserveOne => step.focus,
-    };
+    }
+}
 
-    [primary, step.focus, step.probe]
+fn interesting_keys(step: &Step) -> [u8; 3] {
+    [primary_key(step), step.focus, step.probe]
 }
 
 fn assert_racy_reads(table: &SyncTable<u8, u8>, step: &Step) {
@@ -204,7 +210,9 @@ fn build_steps(data: &[u8]) -> Vec<Step> {
         let before = model;
         let focus = input.next().unwrap_or(tag);
         let probe = input.next().unwrap_or(focus.wrapping_add(1));
-        let loops = input.next().map_or(1, |byte| usize::from(byte % 8 + 1));
+        let control = input.next().unwrap_or(0);
+        let loops = usize::from(control % 8 + 1);
+        let potential = control & 0b1000 != 0;
 
         let op = match tag % 5 {
             0 => {
@@ -271,50 +279,185 @@ fn build_steps(data: &[u8]) -> Vec<Step> {
             focus,
             probe,
             loops,
+            potential,
         });
     }
 
     steps
 }
 
-fn fuzz_sync_table_concurrent(data: &[u8]) {
-    release();
-    collect();
+/// Every value each key ever holds in any step, used by the unbarriered mode where the
+/// reader cannot know which step the writer is on.
+fn possible_values(steps: &[Step]) -> Vec<[bool; 256]> {
+    let mut possible = vec![[false; 256]; 256];
 
-    let steps = build_steps(data);
-    let table = SyncTable::<u8, u8>::new();
-    let barrier = Barrier::new(2);
+    for step in steps {
+        for model in [&step.before, &step.after] {
+            for (key, value) in model.iter().enumerate() {
+                if let Some(value) = value {
+                    possible[key][*value as usize] = true;
+                }
+            }
+        }
+    }
+
+    possible
+}
+
+/// Invariants which hold no matter where the writer is: keys are unique within a snapshot
+/// and every value read was written at some point.
+fn assert_monotone_reads(table: &SyncTable<u8, u8>, possible: &[[bool; 256]]) {
+    pin(|pin| {
+        let read = table.read(pin);
+
+        let mut seen = [false; 256];
+        for (key, value) in read.iter() {
+            let index = *key as usize;
+            assert!(!std::mem::replace(&mut seen[index], true));
+            assert!(possible[index][*value as usize]);
+        }
+
+        for key in 0..=u8::MAX {
+            let hash = table.hash_key(&key);
+
+            if let Some((found_key, value)) = read.get(&key, Some(hash)) {
+                assert_eq!(*found_key, key);
+                assert!(possible[key as usize][*value as usize]);
+            }
+        }
+    });
+}
+
+const READERS: usize = 2;
+
+/// Readers and the writer step in lockstep, so the reads outside the racy window can be
+/// checked against the exact model.
+fn run_barriered(table: &SyncTable<u8, u8>, steps: &[Step]) {
+    let barrier = Barrier::new(READERS + 1);
 
     thread::scope(|scope| {
-        scope.spawn(|| {
-            for step in &steps {
-                assert_table_matches(&table, &step.before);
-                barrier.wait();
-                assert_racy_reads(&table, step);
-                barrier.wait();
-                assert_table_matches(&table, &step.after);
+        for _ in 0..READERS {
+            scope.spawn(|| {
+                for step in steps {
+                    assert_table_matches(table, &step.before);
 
-                if step.loops % 2 == 0 {
-                    let cloned = table.clone();
-                    assert_table_matches(&cloned, &step.after);
+                    if step.potential {
+                        // Hold a `PotentialSlot` derived before the writer runs across the
+                        // whole racy window, then check it still agrees with the table.
+                        pin(|pin| {
+                            let read = table.read(pin);
+                            // Derive the slot from the key the writer is about to touch,
+                            // so the step's transition lands on this very slot instead of
+                            // on it only by coincidence.
+                            let key = primary_key(step);
+                            let hash = table.hash_key(&key);
+                            let potential = read.get_potential(&key, Some(hash));
+
+                            barrier.wait();
+                            assert_racy_reads(table, step);
+                            barrier.wait();
+
+                            let before = step.before[key as usize];
+                            let after = step.after[key as usize];
+
+                            match potential {
+                                Ok((found_key, value)) => {
+                                    assert_eq!(*found_key, key);
+                                    assert_eq!(Some(*value), before);
+                                }
+                                Err(slot) => {
+                                    assert!(before.is_none());
+
+                                    assert_eq!(
+                                        slot.get(read, &key, Some(hash)).map(|(_, value)| *value),
+                                        after
+                                    );
+
+                                    match slot.refresh(read, &key, Some(hash)) {
+                                        Ok((found_key, value)) => {
+                                            assert_eq!(*found_key, key);
+                                            assert_eq!(Some(*value), after);
+                                        }
+                                        Err(_) => assert!(after.is_none()),
+                                    }
+                                }
+                            }
+                        });
+                    } else {
+                        barrier.wait();
+
+                        assert_racy_reads(table, step);
+
+                        // Inside the racy window, so reclamation can run while the writer works.
+                        if step.loops % 3 == 0 {
+                            release();
+                            collect();
+                        }
+
+                        barrier.wait();
+                    }
+
+                    assert_table_matches(table, &step.after);
+
+                    if step.loops % 2 == 0 {
+                        let cloned = table.clone();
+                        assert_table_matches(&cloned, &step.after);
+                    }
                 }
 
-                if step.loops % 3 == 0 {
+                release();
+            });
+        }
+
+        scope.spawn(|| {
+            for step in steps {
+                barrier.wait();
+                thread::yield_now();
+                apply_step(table, step);
+                thread::yield_now();
+
+                if step.loops % 5 == 0 {
                     release();
                     collect();
                 }
+
+                barrier.wait();
             }
 
             release();
         });
+    });
+}
+
+/// No barriers at all, so readers can be several steps behind or ahead of the writer.
+/// Only invariants which hold for every interleaving are checked.
+fn run_unbarriered(table: &SyncTable<u8, u8>, steps: &[Step]) {
+    let possible = possible_values(steps);
+
+    thread::scope(|scope| {
+        for _ in 0..READERS {
+            scope.spawn(|| {
+                for step in steps {
+                    for _ in 0..step.loops {
+                        assert_monotone_reads(table, &possible);
+                        thread::yield_now();
+                    }
+
+                    if step.loops % 3 == 0 {
+                        release();
+                        collect();
+                    }
+                }
+
+                release();
+            });
+        }
 
         scope.spawn(|| {
-            for step in &steps {
-                barrier.wait();
+            for step in steps {
+                // The writer is still the only writer, so the model is exact for it.
+                apply_step(table, step);
                 thread::yield_now();
-                apply_step(&table, step);
-                thread::yield_now();
-                barrier.wait();
 
                 if step.loops % 5 == 0 {
                     release();
@@ -325,6 +468,27 @@ fn fuzz_sync_table_concurrent(data: &[u8]) {
             release();
         });
     });
+
+    // The readers never write, so once they have all joined the table must have landed
+    // exactly on the last step's model. Nothing inside the run can check this, since the
+    // readers cannot tell which step the writer is on.
+    if let Some(last) = steps.last() {
+        assert_table_matches(table, &last.after);
+    }
+}
+
+fn fuzz_sync_table_concurrent(data: &[u8]) {
+    release();
+    collect();
+
+    let steps = build_steps(data);
+    let table = SyncTable::<u8, u8>::new();
+
+    if data.last().is_some_and(|byte| byte & 1 == 1) {
+        run_unbarriered(&table, &steps);
+    } else {
+        run_barriered(&table, &steps);
+    }
 
     drop(table);
 

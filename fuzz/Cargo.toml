@@ -28,5 +28,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "sync_table_drop"
+path = "fuzz_targets/sync_table_drop.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
