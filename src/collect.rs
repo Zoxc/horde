@@ -184,7 +184,8 @@ fn data<R>(f: impl FnOnce(&Data) -> R) -> R {
 ///
 /// Nested calls to [pin] are allowed.
 ///
-/// This will panic if called from a deferred callback.
+/// This will panic if called from a deferred callback. It will also panic if called in
+/// thread local destructors registered before the first [pin] call.
 #[inline]
 pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
     data(|data| {
@@ -210,7 +211,13 @@ pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
 fn pin_cold() {
     data(|data| match data.state.get() {
         State::Unregistered => {
-            EXIT_GUARD.with(|_| ());
+            if EXIT_GUARD.try_with(|_| ()).is_err() {
+                cold_path(|| {
+                    panic!(
+                        "Cannot call `pin` in thread local destructors after the thread exit guard"
+                    )
+                })
+            }
             COLLECTOR.lock().register();
             data.state.set(State::Registered);
         }
