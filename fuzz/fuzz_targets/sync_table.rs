@@ -116,8 +116,7 @@ fn apply_potential_insert(
                     Err(slot) => slot,
                 };
 
-                slot.try_insert_new(&mut write, key, value, hash)
-                    .expect("slot remained vacant after refresh")
+                slot.insert_new(&mut write, key, value, hash)
             } else {
                 slot.insert_new(&mut write, key, value, hash)
             };

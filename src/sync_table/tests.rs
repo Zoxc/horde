@@ -595,32 +595,3 @@ fn intern_get_insert() {
 
     test_interning(intern);
 }
-
-#[test]
-fn intern_potential_try() {
-    let _test = enter_test();
-    fn intern(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> bool {
-        let hash = table.hash_key(&k);
-        let p = match table.read(pin).get_potential(&k, Some(hash)) {
-            Ok(_) => return true,
-            Err(p) => p,
-        };
-
-        let mut lock = table.lock();
-        let mut write = lock.write();
-
-        write.reserve_one();
-
-        let p = p.refresh(table.read(pin), &k, Some(hash));
-
-        match p {
-            Ok(_) => true,
-            Err(p) => {
-                p.try_insert_new(&mut write, k, v, Some(hash)).unwrap();
-                false
-            }
-        }
-    }
-
-    test_interning(intern);
-}

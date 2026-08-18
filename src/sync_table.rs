@@ -1438,7 +1438,7 @@ impl<'a> PotentialSlot<'a> {
 
     /// Returns a new up-to-date potential slot.
     /// This can be useful if there could have been insertions since the slot was derived
-    /// and you want to use `try_insert_new` or `insert_new_unchecked`.
+    /// and you want to use `insert_new`.
     #[inline]
     pub fn refresh<Q, K, V, S: BuildHasher>(
         self,
@@ -1506,33 +1506,6 @@ impl<'a> PotentialSlot<'a> {
     }
 
     /// Inserts a new element into the table, and returns a reference to it.
-    /// Returns [None] if the potential slot is taken by other insertions or if
-    /// there's no spare capacity in the table.
-    ///
-    /// This does not check if the given element already exists in the table.
-    #[inline]
-    pub fn try_insert_new<'b, K: Hash, V, S: BuildHasher>(
-        self,
-        table: &'b mut Write<'_, K, V, S>,
-        key: K,
-        value: V,
-        hash: Option<u64>,
-    ) -> Option<(&'b K, &'b V)> {
-        let hash = table.table.unwrap_hash(&key, hash);
-
-        unsafe {
-            let table = table.table.current();
-
-            if likely(self.is_empty(table) && table.info().growth_left.load(Ordering::Relaxed) > 0)
-            {
-                Some(self.insert(table, (key, value), hash))
-            } else {
-                None
-            }
-        }
-    }
-
-    /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
     ///
@@ -1544,8 +1517,9 @@ impl<'a> PotentialSlot<'a> {
     /// - `hash`, `key` and `value` must match the value used when `self` was derived.
     /// - There must not have been any insertions or `replace` calls to the table since `self`
     ///   was derived.
+    /// - There must be capacity left in the current table
     #[inline]
-    pub unsafe fn insert_new_unchecked<'b, K: Hash, V, S: BuildHasher>(
+    unsafe fn insert_new_unchecked<'b, K: Hash, V, S: BuildHasher>(
         self,
         table: &'b mut Write<'_, K, V, S>,
         key: K,

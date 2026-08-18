@@ -118,25 +118,6 @@ fn intern_triple_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>)
 }
 
 #[unsafe(no_mangle)]
-fn intern_try_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
-    let hash = table.hash_key(&k);
-    let p = match table.read(pin).get_potential(&k, Some(hash)) {
-        Ok((_, v)) => return *v,
-        Err(p) => p,
-    };
-
-    let mut lock = table.lock();
-    let mut write = lock.write();
-    match p.get(write.read(), &k, Some(hash)) {
-        Some((_, v)) => *v,
-        None => {
-            p.try_insert_new(&mut write, k, v, Some(hash));
-            v
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
 fn intern_test(table: &SyncTable<u64, u64>, k: u64, v: u64, pin: Pin<'_>) -> u64 {
     let hash = table.hash_key(&k);
     let p = match table.read(pin).get_potential(&k, Some(hash)) {
@@ -178,7 +159,7 @@ fn intern_refresh_test(
     match p {
         Ok((_, v)) => *v,
         Err(p) => {
-            p.try_insert_new(&mut write, k, v, Some(hash));
+            p.insert_new(&mut write, k, v, Some(hash));
             v
         }
     }
