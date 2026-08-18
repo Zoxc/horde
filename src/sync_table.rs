@@ -1174,6 +1174,9 @@ impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
         K: Borrow<Q>,
         Q: ?Sized + Eq + Hash,
     {
+        // V: Clone bound is not currently needed,
+        // but would allow for a downsizing of the table
+
         let hash = self.table.unwrap_hash(key, hash);
 
         let table = self.table.current();
