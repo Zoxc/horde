@@ -1408,8 +1408,8 @@ impl<'a> PotentialSlot<'a> {
             let index = self.index;
 
             // Check that we are still looking at the same table,
-            // otherwise our index could be out of date due to expansion
-            // or a `replace` call.
+            // otherwise our index could be out of date due to expansion,
+            // a `replace` call, or mixing up a different table.
             table.info.as_ptr() == self.table_info.as_ptr()
                 && self.table_info.ctrl_acquire(index) == EMPTY
         }
