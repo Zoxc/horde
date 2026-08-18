@@ -187,3 +187,13 @@ fn test_expand() {
 
     release();
 }
+
+#[test]
+fn zst_repro_expand_overflow() {
+    let mut v = crate::sync_push_vec::SyncPushVec::<()>::with_capacity(usize::MAX - 1);
+    let mut w = v.write();
+    w.reserve(usize::MAX);
+    assert_eq!(w.read().as_slice().len(), 0);
+    w.push(());
+    assert_eq!(w.read().as_slice().len(), 1);
+}

@@ -596,9 +596,15 @@ impl<'a, T: Clone> Write<'a, T> {
             None => panic!("capacity overflow"),
         };
 
-        // This guarantees exponential growth. The doubling cannot overflow
-        // because `cap <= isize::MAX` and the type of `cap` is `usize`.
-        let cap = cmp::max(capacity * 2, required_cap);
+        // This guarantees exponential growth.
+        let doubled = if mem::size_of::<T>() == 0 {
+            capacity.saturating_mul(2)
+        } else {
+            // The doubling cannot overflow because `capacity <= isize::MAX`,
+            // otherwise allocation of it would have failed.
+            capacity * 2
+        };
+        let cap = cmp::max(doubled, required_cap);
         let cap = cmp::max(Self::MIN_NON_ZERO_CAP, cap);
 
         let new_table = unsafe { table.clone(cap) };
