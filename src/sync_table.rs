@@ -538,6 +538,8 @@ impl<T> TableRef<T> {
         hasher: H,
     ) -> TableRef<T> {
         if iter_size == 0 {
+            debug_assert!(iter.count() == 0);
+
             if capacity > 0 {
                 let buckets = capacity_to_buckets(capacity).expect("capacity overflow");
                 TableRef::allocate(buckets)
@@ -572,6 +574,7 @@ impl<T> TableRef<T> {
             // Copy all elements to the new table.
             for item in iter {
                 if CHECK_LEN && growth_left == 0 {
+                    debug_assert!(false, "excess items in iterator");
                     break;
                 }
 
@@ -1352,6 +1355,8 @@ impl<K: Hash, V, S: BuildHasher> Write<'_, K, V, S> {
         let iter = iter.into_iter();
 
         let table = if let Some(max) = iter.size_hint().1 {
+            // `max` is the max the iterator is allowed to generate, but we need to enable `CHECK_LEN`
+            // to avoid UB for buggy iterators
             TableRef::from_maybe_empty_iter::<_, _, _, true>(
                 iter,
                 max,

@@ -246,6 +246,8 @@ impl<T> TableRef<T> {
         capacity: usize,
     ) -> TableRef<T> {
         if iter_size == 0 {
+            debug_assert!(iter.count() == 0);
+
             if capacity > 0 {
                 TableRef::allocate(capacity)
             } else {
@@ -676,6 +678,8 @@ impl<T> Write<'_, T> {
         let iter = iter.into_iter();
 
         let table = if let Some(max) = iter.size_hint().1 {
+            // `max` is the max the iterator is allowed to generate, but we need to enable `CHECK_LEN`
+            // to avoid UB for buggy iterators
             TableRef::from_maybe_empty_iter::<_, true>(iter, max, capacity)
         } else {
             let elements: Vec<_> = iter.collect();
