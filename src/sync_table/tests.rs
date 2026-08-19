@@ -89,6 +89,75 @@ fn clone_empty_reuses_static_table() {
 }
 
 #[test]
+fn clone_rehashes_a_non_empty_table() {
+    let _test = enter_test();
+
+    const KEYS: u64 = 100;
+
+    // Heap allocated values, so a shallow copy is a double free Miri sees.
+    let m: SyncTable<u64, String> = SyncTable::new();
+    for i in 0..KEYS {
+        assert!(m.lock().write().insert(i, format!("v{i}"), None));
+    }
+
+    let cloned = m.clone();
+
+    // Its own allocation, neither the original's table nor the static empty one.
+    assert_ne!(m.current().info.as_ptr(), cloned.current().info.as_ptr());
+    assert_eq!(cloned.lock().read().capacity(), m.lock().read().capacity());
+    assert_eq!(cloned.lock().read().len(), KEYS as usize);
+
+    // The clone hashes with a fresh `RandomState`, so finding these again means every element
+    // was placed by the clone's own hash rather than copied into the original's bucket.
+    for i in 0..KEYS {
+        assert_eq!(
+            cloned.lock().read().get(&i, None).map(|(_, v)| v.clone()),
+            Some(format!("v{i}"))
+        );
+    }
+    assert_eq!(cloned.lock().read().get(&KEYS, None), None);
+
+    // The two tables are independent.
+    assert!(cloned.lock().write().insert(KEYS, "extra".to_owned(), None));
+    assert_eq!(m.lock().read().get(&KEYS, None), None);
+
+    drop(cloned);
+
+    for i in 0..KEYS {
+        assert_eq!(
+            m.lock().read().get(&i, None).map(|(_, v)| v.clone()),
+            Some(format!("v{i}"))
+        );
+    }
+}
+
+#[test]
+fn clone_rehashes_with_the_clones_own_hasher() {
+    let _test = enter_test();
+
+    const KEYS: u64 = 40;
+
+    let m: SyncTable<u64, u64, ShiftingHashBuilder> =
+        SyncTable::new_with(ShiftingHashBuilder(0), KEYS as usize);
+
+    for i in 0..KEYS {
+        assert!(m.lock().write().insert(i, i, None));
+    }
+
+    let cloned = m.clone();
+
+    // Placed by the clone's hashes, so found by them too.
+    for i in 0..KEYS {
+        assert_eq!(cloned.lock().read().get(&i, None).map(|(_, v)| *v), Some(i));
+    }
+
+    // The original still finds its elements under its own hashes.
+    for i in 0..KEYS {
+        assert_eq!(m.lock().read().get(&i, None).map(|(_, v)| *v), Some(i));
+    }
+}
+
+#[test]
 fn test_replace() {
     let _test = enter_test();
     let m = SyncTable::new();
@@ -849,6 +918,39 @@ fn replace_sizes_by_the_actual_iterator_length() {
     let read = write.read();
     assert_eq!(read.len(), 3);
     assert!(read.capacity() < 1000);
+}
+
+/// A hash builder whose clone deliberately hashes differently from the original.
+struct ShiftingHashBuilder(u64);
+
+impl Clone for ShiftingHashBuilder {
+    fn clone(&self) -> Self {
+        ShiftingHashBuilder(self.0 + 1)
+    }
+}
+
+struct ShiftingHasher(u64);
+
+impl Hasher for ShiftingHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!("only `u64` keys are supported")
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = self.0.wrapping_add(value);
+    }
+}
+
+impl std::hash::BuildHasher for ShiftingHashBuilder {
+    type Hasher = ShiftingHasher;
+
+    fn build_hasher(&self) -> ShiftingHasher {
+        ShiftingHasher(self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    }
 }
 
 #[derive(Clone, Default)]
