@@ -222,7 +222,14 @@ fn pin_cold() {
                     )
                 })
             }
-            COLLECTOR.lock().register();
+
+            if COLLECTOR.lock().register() {
+                // The collector has pending callbacks.
+                // Set `seen_events` to ensure the next `collect` call triggers.
+                data.seen_events
+                    .set(EVENTS.load(Ordering::Relaxed).wrapping_sub(1));
+            }
+
             data.state.set(State::Registered);
         }
         State::Registered | State::Pinned => unreachable!(),
@@ -414,13 +421,21 @@ impl Collector {
         }
     }
 
-    fn register(&mut self) {
+    /// Registers the current thread as a busy participant in the current epoch.
+    ///
+    /// Returns `true` if the collector holds callbacks.
+    #[must_use]
+    fn register(&mut self) -> bool {
         self.busy_count += 1;
         assert!(
             self.threads
                 .insert(thread::current().id(), ThreadState::Busy)
                 .is_none()
         );
+
+        !(self.pending.is_empty()
+            && self.previous_deferred.is_empty()
+            && self.current_deferred.is_empty())
     }
 
     fn unregister(&mut self) {

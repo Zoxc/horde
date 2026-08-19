@@ -416,3 +416,136 @@ fn cancel_by_id_removes_pending_callbacks() {
     collect::collect();
     assert!(!ready_flag.load(Ordering::SeqCst));
 }
+
+/// A thread that registers while its `seen_events` already matches `EVENTS` must still be able
+/// to report a quiescent state, otherwise `busy_count` never reaches 0 again.
+#[test]
+fn register_does_not_stall_reclamation() {
+    let _test = enter_test();
+
+    let free = Arc::new(AtomicUsize::new(0));
+
+    // The main thread becomes a registered, busy participant.
+    collect::pin(|_| ());
+
+    // Register a callback, bumping `EVENTS`.
+    let free2 = free.clone();
+    unsafe {
+        collect::defer_unchecked(move || {
+            free2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    let deferred = Arc::new(Barrier::new(2));
+    let registered = Arc::new(Barrier::new(2));
+    let main_quiet = Arc::new(Barrier::new(2));
+    let worker_quiet = Arc::new(Barrier::new(2));
+    let checked = Arc::new(Barrier::new(2));
+
+    let worker = {
+        let deferred = deferred.clone();
+        let registered = registered.clone();
+        let main_quiet = main_quiet.clone();
+        let worker_quiet = worker_quiet.clone();
+        let checked = checked.clone();
+
+        thread::spawn(move || {
+            deferred.wait();
+
+            // Sync `seen_events` with `EVENTS` while still unregistered.
+            collect::collect();
+
+            // Register with `seen_events == EVENTS`.
+            collect::pin(|_| ());
+            registered.wait();
+
+            main_quiet.wait();
+            collect::collect();
+            worker_quiet.wait();
+
+            // Stay registered until the main thread has checked the result, so the release
+            // below cannot be what completes the epoch.
+            checked.wait();
+            collect::release();
+        })
+    };
+
+    deferred.wait();
+    registered.wait();
+
+    collect::collect();
+    main_quiet.wait();
+
+    worker_quiet.wait();
+    collect::collect();
+
+    assert_eq!(free.load(Ordering::SeqCst), 1);
+
+    checked.wait();
+    worker.join().unwrap();
+}
+
+/// A thread that registers while the collector is empty is not nudged, so it must still be
+/// woken by the `EVENTS` bump of a later `defer` from another thread.
+#[test]
+fn register_into_empty_collector_still_collects_later() {
+    let _test = enter_test();
+
+    let free = Arc::new(AtomicUsize::new(0));
+
+    // The main thread becomes a registered, busy participant while nothing is deferred.
+    collect::pin(|_| ());
+
+    let registered = Arc::new(Barrier::new(2));
+    let deferred = Arc::new(Barrier::new(2));
+    let worker_quiet = Arc::new(Barrier::new(2));
+    let checked = Arc::new(Barrier::new(2));
+
+    let worker = {
+        let free = free.clone();
+        let registered = registered.clone();
+        let deferred = deferred.clone();
+        let worker_quiet = worker_quiet.clone();
+        let checked = checked.clone();
+
+        thread::spawn(move || {
+            // Sync `seen_events` with `EVENTS` while still unregistered.
+            collect::collect();
+
+            // Register with `seen_events == EVENTS` and an empty collector.
+            collect::pin(|_| ());
+            registered.wait();
+
+            // The callback is deferred after this thread registered.
+            deferred.wait();
+
+            collect::collect();
+            worker_quiet.wait();
+
+            // Stay registered until the main thread has checked the result, so the release
+            // below cannot be what completes the epoch.
+            checked.wait();
+            drop(free);
+            collect::release();
+        })
+    };
+
+    registered.wait();
+
+    let free2 = free.clone();
+    unsafe {
+        collect::defer_unchecked(move || {
+            free2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    deferred.wait();
+
+    collect::collect();
+    worker_quiet.wait();
+    collect::collect();
+
+    assert_eq!(free.load(Ordering::SeqCst), 1);
+
+    checked.wait();
+    worker.join().unwrap();
+}
