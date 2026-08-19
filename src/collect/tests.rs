@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use crate::collect;
+use crate::sync_table::SyncTable;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::LazyLock;
@@ -681,4 +682,46 @@ fn pin_after_the_exit_guard_is_rejected() {
             .as_deref(),
         Some("Cannot call `pin` in thread local destructors after the thread exit guard")
     );
+}
+
+/// Callbacks run with the collector lock released, which is what makes them free to call
+/// `defer`, `defer_by_id` and `cancel_by_ids` again. `SyncTable`'s drop glue relies on that:
+/// it calls `cancel_by_ids` to unregister its retired tables, and the collector's mutex is not
+/// reentrant, so running callbacks under the lock would deadlock a container dropped from one.
+#[test]
+fn a_callback_may_call_back_into_the_collector() {
+    let _test = enter_test();
+
+    let table: SyncTable<u64, u64> = SyncTable::new();
+    for i in 0..64 {
+        assert!(table.lock().write().insert(i, i, None));
+    }
+
+    let reentrant = Arc::new(AtomicUsize::new(0));
+    let reentrant2 = reentrant.clone();
+
+    collect::defer(move || {
+        // Grow the table from inside the callback, so it retires tables which are registered
+        // with the collector after this batch of callbacks was taken from it. Their ids are
+        // therefore still live, and the drop below really does reach the collector lock rather
+        // than bailing out of `cancel_by_ids` on an empty set.
+        for i in 64..1024 {
+            assert!(table.lock().write().insert(i, i, None));
+        }
+
+        // `drop` -> `drop_impl` -> `cancel_by_ids`.
+        drop(table);
+
+        // Deferring more work takes the same lock.
+        let reentrant3 = reentrant2.clone();
+        collect::defer(move || {
+            reentrant3.fetch_add(1, Ordering::SeqCst);
+        });
+    });
+
+    collect::collect();
+    assert_eq!(reentrant.load(Ordering::SeqCst), 0);
+
+    collect::collect();
+    assert_eq!(reentrant.load(Ordering::SeqCst), 1);
 }
