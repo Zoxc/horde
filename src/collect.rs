@@ -65,7 +65,7 @@ pub fn defer(f: impl FnOnce() + Send + 'static) {
 /// store is cancelled using [cancel_by_ids].
 ///
 /// A pointer must not be scheduled again until a previous registration of it has been observed
-/// to be writen as `true` by the collector or cancelled.
+/// to be written as `true` by the collector or cancelled.
 pub(crate) unsafe fn defer_by_id(ready: *const AtomicBool) {
     COLLECTOR.lock().defer_by_id(ready);
 }
@@ -374,7 +374,7 @@ impl Callbacks {
 
     fn mark_ready(&mut self) {
         for ready in self.defer_by_id.drain(..) {
-            // SAFETY: It's up the the caller of `defer_by_id` to ensure this
+            // SAFETY: It's up to the caller of `defer_by_id` to ensure this
             // pointer stays valid.
             unsafe {
                 (*ready).store(true, Ordering::Release);
