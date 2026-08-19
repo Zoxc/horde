@@ -10,6 +10,7 @@ where
 }
 
 #[inline]
+#[must_use]
 pub fn guard<T, F>(value: T, dropfn: F) -> ScopeGuard<T, F>
 where
     F: FnMut(&mut T),
