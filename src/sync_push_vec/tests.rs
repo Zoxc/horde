@@ -190,6 +190,8 @@ fn test_expand() {
 
 #[test]
 fn zst_repro_expand_overflow() {
+    let _test = enter_test();
+
     let mut v = crate::sync_push_vec::SyncPushVec::<()>::with_capacity(usize::MAX - 1);
     let mut w = v.write();
     w.reserve(usize::MAX);
