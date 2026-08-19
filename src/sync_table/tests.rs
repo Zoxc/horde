@@ -1085,3 +1085,137 @@ fn allocate_rejects_a_bucket_count_below_the_group_width() {
 fn allocate_rejects_a_non_power_of_two_bucket_count() {
     TableRef::<(u64, u64)>::allocate(24);
 }
+
+#[test]
+fn unsafe_write_and_lock_from_guard_give_a_working_handle() {
+    let _test = enter_test();
+
+    let m: SyncTable<u64, u64> = SyncTable::new();
+
+    // SAFETY: this thread holds the only handle to `m`, so no other `Write` exists.
+    assert!(unsafe { m.unsafe_write() }.insert(1, 10, None));
+
+    // SAFETY: as above.
+    let mut write = unsafe { m.unsafe_write_no_prune() };
+    assert!(write.insert(2, 20, None));
+    write.prune();
+
+    let mut lock = m.lock_from_guard(m.mutex().lock());
+    assert!(lock.write().insert(3, 30, None));
+    assert_eq!(lock.read().len(), 3);
+
+    assert!(m.mutex().is_locked());
+    drop(lock);
+    assert!(!m.mutex().is_locked());
+
+    let mut lock = m.lock_from_guard_no_prune(m.mutex().lock());
+    assert!(lock.write().insert(4, 40, None));
+    for i in 1..=4u64 {
+        assert_eq!(lock.read().get(&i, None).map(|(_, v)| *v), Some(i * 10));
+    }
+    drop(lock);
+}
+
+#[test]
+#[should_panic(expected = "left == right")]
+fn lock_from_guard_rejects_another_tables_guard() {
+    let _test = enter_test();
+
+    let a: SyncTable<u64, u64> = SyncTable::new();
+    let b: SyncTable<u64, u64> = SyncTable::new();
+
+    let _lock = a.lock_from_guard(b.mutex().lock());
+}
+
+#[test]
+fn the_static_empty_table_reads_as_empty() {
+    let _test = enter_test();
+
+    let m: SyncTable<u64, u64> = SyncTable::new();
+
+    pin(|pin| {
+        let read = m.read(pin);
+
+        assert_eq!(read.len(), 0);
+        assert_eq!(read.capacity(), 0);
+
+        let iter = read.iter();
+        assert_eq!(iter.clone().count(), 0);
+        assert_eq!(format!("{iter:?}"), "[]");
+    });
+
+    // The same handles on a table which does have buckets.
+    assert!(m.lock().write().insert(1, 2, None));
+
+    pin(|pin| {
+        let read = m.read(pin);
+        let iter = read.iter();
+
+        assert_eq!(iter.clone().count(), 1);
+        assert_eq!(format!("{iter:?}"), "[(1, 2)]");
+    });
+}
+
+#[test]
+fn from_iter_inserts_every_pair() {
+    let _test = enter_test();
+
+    let mut m: SyncTable<u64, u64> = (0..40u64).map(|i| (i, i * 2)).collect();
+
+    {
+        let write = m.write();
+        let read = write.read();
+        assert_eq!(read.len(), 40);
+        for i in 0..40u64 {
+            assert_eq!(read.get(&i, None).map(|(_, v)| *v), Some(i * 2));
+        }
+        assert_eq!(read.get(&40, None), None);
+    }
+}
+
+#[test]
+fn replace_honours_a_capacity_larger_than_the_iterator() {
+    let _test = enter_test();
+
+    let m: SyncTable<u64, u64> = SyncTable::new();
+    m.lock().write().replace((0..4u64).map(|i| (i, i * 3)), 100);
+
+    let lock = m.lock();
+    let read = lock.read();
+
+    assert_eq!(read.len(), 4);
+    assert!(read.capacity() >= 100);
+    for i in 0..4u64 {
+        assert_eq!(read.get(&i, None).map(|(_, v)| *v), Some(i * 3));
+    }
+    drop(lock);
+}
+
+#[test]
+fn zero_sized_keys_and_values() {
+    let _test = enter_test();
+
+    let unit: SyncTable<(), ()> = SyncTable::new();
+    assert!(unit.lock().write().insert((), (), None));
+    assert!(!unit.lock().write().insert((), (), None));
+    assert_eq!(unit.lock().read().get(&(), None), Some((&(), &())));
+    assert_eq!(unit.lock().read().len(), 1);
+
+    // Real keys with zero sized values, over enough elements to force several rehashes.
+    const KEYS: u64 = 300;
+    let m: SyncTable<u64, ()> = SyncTable::new();
+    for i in 0..KEYS {
+        assert!(m.lock().write().insert(i, (), None));
+    }
+    for i in 0..KEYS {
+        assert!(m.lock().read().get(&i, None).is_some());
+    }
+    assert_eq!(m.lock().read().len(), KEYS as usize);
+    assert!(m.lock().read().get(&KEYS, None).is_none());
+}
+
+#[test]
+#[should_panic(expected = "capacity overflow")]
+fn new_with_rejects_a_capacity_which_overflows() {
+    SyncTable::<u64, u64>::new_with(RandomState::new(), usize::MAX);
+}
