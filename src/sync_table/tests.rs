@@ -411,6 +411,146 @@ fn concurrent_insert_remove_and_get() {
     release();
 }
 
+/// A pinned reader keeps the table it reads from alive, however often a writer replaces it.
+///
+/// The other concurrent tests never get past the static empty table, which `replace_table`
+/// returns early for, so none of them ever retires anything.
+#[test]
+fn concurrent_read_across_a_table_retirement() {
+    let _test = enter_test();
+
+    #[derive(Clone)]
+    struct Tracked {
+        // A heap allocation, so reading a freed table is a use-after-free Miri can see.
+        name: String,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    // Exactly the capacity of the first allocation, so the writer below grows the table
+    // the reader is pinned on straight away.
+    const KEYS: usize = 14;
+    const EXTRA: usize = 42;
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let value = |i: usize| Tracked {
+        name: format!("v{i}"),
+        drops: drops.clone(),
+    };
+
+    let table: SyncTable<usize, Tracked> = SyncTable::new();
+
+    {
+        let mut lock = table.lock();
+        for i in 0..KEYS {
+            assert!(lock.write().insert(i, value(i), None));
+        }
+    }
+
+    let pinned = Barrier::new(2);
+    let retired = Barrier::new(2);
+    let checked = Barrier::new(2);
+
+    let mut freed_while_pinned = 0;
+    let mut retired_while_pinned = 0;
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let observed = pin(|pin| {
+                // References into the table as it is now, borrowed for as long as the pin.
+                // The writer replaces that table below.
+                let entries: Vec<_> = (0..KEYS)
+                    .map(|i| table.read(pin).get(&i, None).unwrap())
+                    .collect();
+
+                pinned.wait();
+                retired.wait();
+
+                // The table these point into has been retired and the writer has tried to
+                // free it since, so this reads what the reclamation has to keep alive.
+                let observed: Vec<_> = entries
+                    .into_iter()
+                    .map(|(key, value)| (*key, value.name.clone()))
+                    .collect();
+
+                checked.wait();
+
+                observed
+            });
+
+            release();
+
+            // Assert once the writer is no longer waiting on a barrier for this thread.
+            for (i, entry) in observed.into_iter().enumerate() {
+                assert_eq!(entry, (i, format!("v{i}")));
+            }
+        });
+
+        pinned.wait();
+
+        {
+            let mut lock = table.lock_no_prune();
+            let mut write = lock.write();
+
+            // Grow the table several times over, retiring the reader's table on the way.
+            for i in KEYS..KEYS + EXTRA {
+                assert!(write.insert(i, value(i), None));
+            }
+
+            // Give the collector every chance to hand the retired tables back.
+            for _ in 0..4 {
+                crate::collect::collect();
+            }
+            write.prune();
+
+            freed_while_pinned = drops.load(Ordering::SeqCst);
+            retired_while_pinned = write.table.retired.get().retired_iter().count();
+        }
+
+        retired.wait();
+        checked.wait();
+    });
+
+    // Assert once the reader has been joined, so a failure cannot strand it on a barrier.
+    assert!(
+        retired_while_pinned > 0,
+        "no table was retired, so nothing tested the pin"
+    );
+    assert_eq!(
+        freed_while_pinned, 0,
+        "a table was freed while a reader was pinned on it"
+    );
+
+    // With the reader unpinned and gone, the retired tables can go too.
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+
+    let mut lock = table.lock_no_prune();
+    let mut write = lock.write();
+    write.prune();
+
+    assert_eq!(write.table.retired.get().retired_iter().count(), 0);
+    assert!(drops.load(Ordering::SeqCst) > 0);
+
+    // The elements the retired tables held were copies; the current table still has its own.
+    for i in 0..KEYS + EXTRA {
+        assert_eq!(
+            write
+                .read()
+                .get(&i, None)
+                .map(|(_, value)| value.name.clone()),
+            Some(format!("v{i}"))
+        );
+    }
+}
+
 #[test]
 fn test_iter() {
     let _test = enter_test();
