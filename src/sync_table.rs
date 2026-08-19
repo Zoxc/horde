@@ -961,9 +961,9 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
         make_insert_hash(&self.hash_builder, key)
     }
 
-    /// Gets a mutable reference to an element in the table.
+    /// Gets a mutable reference to the value of an element in the table.
     #[inline]
-    pub fn get_mut<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&mut K, &mut V)>
+    pub fn get_mut<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&K, &mut V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Eq + Hash,
@@ -973,7 +973,7 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
         unsafe {
             self.current().find(hash, eq(key)).map(|(_, bucket)| {
                 let pair = bucket.as_mut();
-                (&mut pair.0, &mut pair.1)
+                (&pair.0, &mut pair.1)
             })
         }
     }
