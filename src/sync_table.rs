@@ -948,7 +948,15 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
         K: Borrow<Q>,
         Q: ?Sized + Hash,
     {
-        hash.unwrap_or_else(|| self.hash_key(key))
+        match hash {
+            Some(hash) => {
+                // A hash which disagrees with the table's hasher puts the element outside its
+                // own probe sequence, so it is lost to later lookups.
+                debug_assert_eq!(hash, self.hash_key(key), "hash does not match the key");
+                hash
+            }
+            None => self.hash_key(key),
+        }
     }
 
     /// Hashes a key with the table's hasher.
@@ -962,6 +970,8 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
     }
 
     /// Gets a mutable reference to the value of an element in the table.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
     pub fn get_mut<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&K, &mut V)>
     where
@@ -982,6 +992,8 @@ impl<K, V, S: BuildHasher> SyncTable<K, V, S> {
 impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
     /// Gets a reference to an element in the table or a potential location
     /// where that element could be.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
     pub fn get_potential<Q>(
         self,
@@ -1003,6 +1015,8 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
     }
 
     /// Gets a reference to an element in the table.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
     pub fn get<Q>(self, key: &Q, hash: Option<u64>) -> Option<(&'a K, &'a V)>
     where
@@ -1172,6 +1186,8 @@ impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     ///
     /// The element will only be dropped after the internal table currently in use is replaced
     /// for example by `replace` or due to expansion.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
     pub fn remove<Q>(&mut self, key: &Q, hash: Option<u64>) -> Option<(&K, &V)>
     where
@@ -1202,6 +1218,8 @@ impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
 impl<'a, K: Hash + Eq + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Inserts a element into the table.
     /// Returns `false` if it already exists and doesn't update the value.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
     pub fn insert(&mut self, key: K, value: V, hash: Option<u64>) -> bool {
         let hash = self.table.unwrap_hash(&key, hash);
@@ -1228,6 +1246,8 @@ impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
     pub fn insert_new(&mut self, key: K, value: V, hash: Option<u64>) -> (&K, &V) {
         let hash = self.table.unwrap_hash(&key, hash);
@@ -1439,6 +1459,11 @@ impl<'a> PotentialSlot<'a> {
     }
 
     /// Gets a reference to an element in the table.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
+    ///
+    /// `table` and `key` must match the values given when `self` was
+    /// created using a `get_potential` or `refresh` call.
     #[inline]
     pub fn get<'b, Q, K, V, S: BuildHasher>(
         self,
@@ -1462,6 +1487,11 @@ impl<'a> PotentialSlot<'a> {
     /// Returns a new up-to-date potential slot.
     /// This can be useful if there could have been insertions since the slot was derived
     /// and you want to use `insert_new`.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
+    ///
+    /// `table` and `key` must match the values given when `self` was
+    /// created using a `get_potential` or `refresh` call.
     #[inline]
     pub fn refresh<Q, K, V, S: BuildHasher>(
         self,
@@ -1504,6 +1534,11 @@ impl<'a> PotentialSlot<'a> {
     /// Inserts a new element into the table, and returns a reference to it.
     ///
     /// This does not check if the given element already exists in the table.
+    ///
+    /// `hash` must be a hash of `key` from the table's hasher if present.
+    ///
+    /// `table` and `key` must match the values given when `self` was
+    /// created using a `get_potential` or `refresh` call.
     #[inline]
     pub fn insert_new<'b, K: Hash + Clone, V: Clone, S: BuildHasher>(
         self,
@@ -1532,15 +1567,17 @@ impl<'a> PotentialSlot<'a> {
     ///
     /// This does not check if the given element already exists in the table.
     ///
-    /// # Safety
-    /// Derived refers here to either a value returned by `get_potential` or by a `refresh` call.
+    /// `hash` must be a hash of `key` from the table's hasher if present.
     ///
-    /// The following conditions must hold for this function to be safe:
-    /// - `table` must be the same table that `self` is derived from.
-    /// - `hash`, `key` and `value` must match the value used when `self` was derived.
+    /// `key` must match the value given when `self` was created using a
+    /// `get_potential` or `refresh` call.
+    ///
+    /// # Safety
+    /// - `table` must match the value given when `self` was created using a
+    ///   `get_potential` or `refresh` call.
     /// - There must not have been any insertions or `replace` calls to the table since `self`
     ///   was derived.
-    /// - There must be capacity left in the current table
+    /// - There must be capacity left in the current table.
     #[inline]
     unsafe fn insert_new_unchecked<'b, K: Hash, V, S: BuildHasher>(
         self,

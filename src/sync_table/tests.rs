@@ -677,3 +677,18 @@ fn replace_sizes_by_the_actual_iterator_length() {
     assert_eq!(read.len(), 3);
     assert!(read.capacity() < 1000);
 }
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "hash does not match the key")]
+fn insert_with_a_mismatched_hash_is_rejected() {
+    let _test = enter_test();
+
+    let m = SyncTable::new();
+
+    // A hash that is not `hash_key(&1)` would place the element outside its own probe
+    // sequence, losing it.
+    let wrong = m.hash_key(&1u64) ^ (1 << 63);
+
+    m.lock().write().insert(1u64, 2u64, Some(wrong));
+}
