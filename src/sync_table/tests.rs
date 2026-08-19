@@ -431,14 +431,27 @@ fn test_expand() {
 
     assert_eq!(m.lock().read().len(), 0);
 
-    let mut i = 0;
+    // Take the bucket count after the first insert: a new table points at the static empty
+    // one.
+    m.lock().write().insert(0, 0, None);
     let old_raw_cap = unsafe { m.current().info().buckets() };
+
+    let mut i = 1;
     while old_raw_cap == unsafe { m.current().info().buckets() } {
         m.lock().write().insert(i, i, None);
         i += 1;
     }
 
+    assert!(unsafe { m.current().info().buckets() } > old_raw_cap);
     assert_eq!(m.lock().read().len(), i);
+
+    // Everything the rehash moved must still be there.
+    for key in 0..i {
+        assert_eq!(
+            m.lock().read().get(&key, None).map(|(_, value)| *value),
+            Some(key)
+        );
+    }
 
     release();
 }
