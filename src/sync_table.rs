@@ -480,8 +480,20 @@ impl<T> TableRef<T> {
         Some((layout, info_offset))
     }
 
+    /// Allocates a table with `bucket_count` buckets.
+    ///
+    /// `bucket_count` must be a power of two of at least `Group::WIDTH`, which
+    /// is what `capacity_to_buckets` returns. 0 underflows `bucket_mask`, 1
+    /// leaves a `bucket_mask` of 0, which marks the static `EMPTY_TABLE` so the
+    /// table would never be retired or freed, and any other value is not a
+    /// usable mask for `ctrl` and `set_ctrl`.
     #[inline]
     fn allocate(bucket_count: usize) -> Self {
+        debug_assert!(
+            bucket_count.is_power_of_two() && bucket_count >= Group::WIDTH,
+            "bucket count must be a power of two of at least the group width"
+        );
+
         let (layout, info_offset) = Self::layout(bucket_count).expect("capacity overflow");
 
         let ptr =

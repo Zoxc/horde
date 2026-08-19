@@ -692,3 +692,19 @@ fn insert_with_a_mismatched_hash_is_rejected() {
 
     m.lock().write().insert(1u64, 2u64, Some(wrong));
 }
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "bucket count must be a power of two")]
+fn allocate_rejects_a_bucket_count_below_the_group_width() {
+    // A single bucket leaves a `bucket_mask` of 0, which is how the static
+    // `EMPTY_TABLE` is recognized, so such a table could never be freed.
+    TableRef::<(u64, u64)>::allocate(1);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "bucket count must be a power of two")]
+fn allocate_rejects_a_non_power_of_two_bucket_count() {
+    TableRef::<(u64, u64)>::allocate(24);
+}
