@@ -2,7 +2,6 @@
 
 use super::TableRef;
 use crate::collect::enter_test;
-use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 use crate::util::leak_as_miri_root;
 use std::mem;
@@ -84,8 +83,6 @@ fn test_insert() {
     assert_eq!(m.lock().read().len(), 2);
     assert_eq!(m.lock().read().as_slice()[0], 2);
     assert_eq!(m.lock().read().as_slice()[1], 5);
-
-    release();
 }
 
 #[test]
@@ -116,8 +113,6 @@ fn swapped_locks_keep_their_guards() {
 
     assert_eq!(b.lock().read().as_slice(), [1]);
     assert_eq!(a.lock().read().as_slice(), [2]);
-
-    release();
 }
 
 #[test]
@@ -131,7 +126,6 @@ fn test_replace() {
     assert_eq!(m.lock().read().as_slice(), [3]);
     m.lock().write().replace(vec![], 0);
     assert_eq!(m.lock().read().as_slice(), []);
-    release();
 }
 
 #[test]
@@ -141,7 +135,6 @@ fn test_replace_empty_preserves_requested_capacity() {
     m.lock().write().replace(Vec::<i32>::new(), 8);
     assert_eq!(m.lock().read().as_slice(), []);
     assert_eq!(m.lock().read().capacity(), 8);
-    release();
 }
 
 #[test]
@@ -192,8 +185,6 @@ fn test_expand() {
 
     // Everything the copy into the bigger table moved must still be there, in order.
     assert_eq!(m.lock().read().as_slice(), (0..i).collect::<Vec<_>>());
-
-    release();
 }
 
 #[test]
