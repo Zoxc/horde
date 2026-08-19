@@ -334,8 +334,11 @@ impl TableInfoRef {
         }
     }
 
-    /// Searches for an empty or deleted bucket which is suitable for inserting
-    /// a new element and sets the hash for that slot.
+    /// Searches for an empty bucket which is suitable for inserting a new element
+    /// and sets the hash for that slot.
+    ///
+    /// Tombstones are never reused: a lookup stops only on an empty bucket, so filling a
+    /// `DELETED` bucket in the middle of a probe sequence would hide the elements behind it.
     ///
     /// There must be at least 1 empty bucket in the table.
     #[inline]
@@ -348,8 +351,7 @@ impl TableInfoRef {
         }
     }
 
-    /// Searches for an empty or deleted bucket which is suitable for inserting
-    /// a new element.
+    /// Searches for an empty bucket which is suitable for inserting a new element.
     ///
     /// There must be at least 1 empty bucket in the table.
     #[inline]

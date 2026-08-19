@@ -851,6 +851,78 @@ fn replace_sizes_by_the_actual_iterator_length() {
     assert!(read.capacity() < 1000);
 }
 
+#[derive(Clone, Default)]
+struct IdentityHashBuilder;
+
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!("only `u64` keys are supported")
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+impl std::hash::BuildHasher for IdentityHashBuilder {
+    type Hasher = IdentityHasher;
+
+    fn build_hasher(&self) -> IdentityHasher {
+        IdentityHasher(0)
+    }
+}
+
+/// `remove` leaves a `DELETED` tombstone behind and lookups stop only on `EMPTY`, so a key
+/// whose probe sequence starts on a tombstone must still be found.
+#[test]
+fn lookup_probes_past_a_tombstone() {
+    let _test = enter_test();
+
+    // Hashes are the keys themselves. Every key is a multiple of the bucket count, so they
+    // all start their probe sequence at bucket 0, and their top bits are all zero, so they
+    // share an `h2` byte too. They fill consecutive buckets from there.
+    const STRIDE: u64 = 1024;
+    const KEYS: u64 = 32;
+
+    let m: SyncTable<u64, u64, IdentityHashBuilder> =
+        SyncTable::new_with(IdentityHashBuilder, KEYS as usize);
+
+    for i in 0..KEYS {
+        assert!(m.lock().write().insert(i * STRIDE, i * 10, None));
+    }
+
+    // Tombstone the first bucket of the probe sequence all of them share. The keys past the
+    // first group now sit behind a full group which starts on that tombstone.
+    assert_eq!(
+        m.lock().write().remove(&0, None).map(|(key, _)| *key),
+        Some(0)
+    );
+
+    for i in 1..KEYS {
+        assert_eq!(
+            m.lock().read().get(&(i * STRIDE), None).map(|(_, v)| *v),
+            Some(i * 10),
+            "the lookup for key {} did not probe past the tombstone",
+            i * STRIDE
+        );
+    }
+
+    // Tombstones are never reused, so this takes a bucket past all of the above and has to
+    // be found through the tombstone it left behind.
+    assert!(m.lock().write().insert(0, 1, None));
+    assert_eq!(m.lock().read().get(&0, None).map(|(_, v)| *v), Some(1));
+
+    // A missing key sharing the same probe sequence must still stop, at the first empty
+    // bucket after all of them.
+    assert_eq!(m.lock().read().get(&(KEYS * STRIDE), None), None);
+}
+
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "hash does not match the key")]
