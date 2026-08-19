@@ -24,7 +24,7 @@ impl BitMask {
         BitMask(self.0 ^ BITMASK_MASK)
     }
 
-    /// Returns a new `BitMask` with the lowest bit removed.
+    /// Returns a new `BitMask` with the lowest set bit removed.
     ///
     /// Returns an empty mask if there is no set bit.
     #[inline]
@@ -38,7 +38,10 @@ impl BitMask {
         self.0 != 0
     }
 
-    /// Returns the first set bit in the `BitMask`, if there is one.
+    /// Returns the index of the lowest matched byte in the group, if there is one.
+    ///
+    /// This is the position of the lowest set bit divided by `BITMASK_STRIDE`, so it is a byte
+    /// index within the group rather than a bit offset into the mask.
     #[inline]
     pub fn lowest_set_bit(self) -> Option<usize> {
         NonZero::<BitMaskWord>::new(self.0)
