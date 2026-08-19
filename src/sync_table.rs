@@ -572,6 +572,11 @@ impl<T> TableRef<T> {
     }
 
     /// Allocates a new table and fills it with the content of an iterator
+    ///
+    /// # Safety
+    /// `buckets` must be valid for `allocate`. With `CHECK_LEN` disabled the
+    /// copy loop has no bound, so `iter` must then yield at most as many items
+    /// as `buckets` gives capacity for.
     unsafe fn from_iter<S, I: Iterator<Item = T>, H: Fn(&S, &T) -> u64, const CHECK_LEN: bool>(
         iter: I,
         buckets: usize,

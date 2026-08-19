@@ -264,6 +264,11 @@ impl<T> TableRef<T> {
     }
 
     /// Allocates a new table and fills it with the content of an iterator
+    ///
+    /// # Safety
+    /// `new_capacity` must be greater than 0. With `CHECK_LEN` disabled the
+    /// copy loop has no bound, so `iter` must then yield at most `new_capacity`
+    /// items.
     unsafe fn from_iter<I: Iterator<Item = T>, const CHECK_LEN: bool>(
         iter: I,
         new_capacity: usize,
