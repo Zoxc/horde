@@ -35,12 +35,11 @@ pub(crate) use tests::enter_test;
 /// Monotonic event counter used to notify threads that reclamation state changed.
 static EVENTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Represents a proof that no deferred callbacks will run for the lifetime `'a`.
-///
-/// A `Pin` is handed to the closure passed to [pin] and can be used to access data structures in
-/// a lock-free manner while the current thread remains pinned.
+/// Represents a proof that no callback deferred at or after the start of `'a` will run during
+/// `'a`.
 #[derive(Clone, Copy)]
 pub struct Pin<'a> {
+    // Pin` is `Send` and `Sync` as having a single thread pinning is sufficient.
     _private: PhantomData<&'a ()>,
 }
 
