@@ -660,3 +660,20 @@ fn insert_remove_churn_shrinks_a_mostly_empty_table() {
 
     release();
 }
+
+#[test]
+fn replace_sizes_by_the_actual_iterator_length() {
+    let _test = enter_test();
+
+    let mut m = SyncTable::new();
+
+    // `filter` only bounds the length from above, so the allocation must be sized by the
+    // number of elements actually yielded.
+    m.write()
+        .replace((0..1000i32).filter(|x| *x < 3).map(|x| (x, x)), 0);
+
+    let write = m.write();
+    let read = write.read();
+    assert_eq!(read.len(), 3);
+    assert!(read.capacity() < 1000);
+}

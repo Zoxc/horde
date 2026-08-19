@@ -197,3 +197,20 @@ fn zst_repro_expand_overflow() {
     w.push(());
     assert_eq!(w.read().as_slice().len(), 1);
 }
+
+#[test]
+fn replace_sizes_by_the_actual_iterator_length() {
+    let _test = enter_test();
+
+    let mut m = SyncPushVec::new();
+
+    // `filter` only bounds the length from above, so the allocation must be sized by the
+    // number of elements actually yielded.
+    m.write().replace((0..1000u32).filter(|x| *x < 3), 0);
+
+    let write = m.write();
+    let read = write.read();
+    assert_eq!(read.as_slice(), &[0, 1, 2]);
+    assert_eq!(read.len(), 3);
+    assert_eq!(read.capacity(), 3);
+}

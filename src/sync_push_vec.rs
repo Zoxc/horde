@@ -688,10 +688,12 @@ impl<T> Write<'_, T> {
     pub fn replace<I: IntoIterator<Item = T>>(&mut self, iter: I, capacity: usize) {
         let iter = iter.into_iter();
 
-        let table = if let Some(max) = iter.size_hint().1 {
-            // `max` is the max the iterator is allowed to generate, but we need to enable `CHECK_LEN`
-            // to avoid UB for buggy iterators
-            TableRef::from_maybe_empty_iter::<_, true>(iter, max, capacity)
+        let (min, max) = iter.size_hint();
+
+        let table = if max == Some(min) {
+            // The iterator reports an exact length,
+            // but `CHECK_LEN` is still needed to avoid UB for buggy iterators.
+            TableRef::from_maybe_empty_iter::<_, true>(iter, min, capacity)
         } else {
             let elements: Vec<_> = iter.collect();
             let len = elements.len();
