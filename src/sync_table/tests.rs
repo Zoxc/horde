@@ -756,7 +756,7 @@ fn test_interning(intern: impl Fn(&SyncTable<u64, u64>, u64, u64, Pin<'_>) -> bo
         let mut s = DefaultHasher::new();
         s.write_u64(i);
         let s = s.finish();
-        if s % 100 > (100 - HIT_RATE) {
+        if s % 100 < HIT_RATE {
             test.lock().write().insert(i, i * 2, None);
             control.insert(i, i * 2);
         }
