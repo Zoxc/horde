@@ -283,3 +283,99 @@ fn dropping_the_vector_drops_every_element_exactly_once() {
 
     assert_eq!(DROPPED.load(Ordering::SeqCst), constructed);
 }
+
+#[test]
+fn push_returns_the_index_of_the_new_element() {
+    let _test = enter_test();
+
+    let mut m = SyncPushVec::new();
+    let mut write = m.write();
+
+    // Enough pushes that the vector expands several times on the way.
+    for i in 0..40u32 {
+        let (value, index) = write.push(i);
+        assert_eq!(*value, i);
+        assert_eq!(index, i as usize);
+    }
+
+    let read = write.read();
+    for i in 0..40u32 {
+        assert_eq!(read.as_slice()[i as usize], i);
+    }
+}
+
+#[test]
+fn unsafe_write_and_lock_from_guard_give_a_working_handle() {
+    let _test = enter_test();
+
+    let m = SyncPushVec::new();
+
+    // SAFETY: this thread holds the only handle to `m`, so no other `Write` exists.
+    unsafe { m.unsafe_write() }.push(1);
+
+    let mut lock = m.lock_from_guard(m.mutex().lock());
+    lock.write().push(2);
+    assert_eq!(lock.read().as_slice(), [1, 2]);
+
+    // The guard is held for as long as the handle is.
+    assert!(m.mutex().is_locked());
+    drop(lock);
+    assert!(!m.mutex().is_locked());
+}
+
+/// The mismatch check is the only thing keeping a `LockedWrite` from being built over a guard
+/// for a different vector's mutex, which would leave both unprotected.
+#[test]
+#[should_panic(expected = "left == right")]
+fn lock_from_guard_rejects_another_vectors_guard() {
+    let _test = enter_test();
+
+    let a = SyncPushVec::<u32>::new();
+    let b = SyncPushVec::<u32>::new();
+
+    let _lock = a.lock_from_guard(b.mutex().lock());
+}
+
+#[test]
+fn from_iter_and_extend_take_every_element() {
+    let _test = enter_test();
+
+    let mut m: SyncPushVec<u32> = (0..8).collect();
+    assert_eq!(m.write().read().as_slice(), (0..8).collect::<Vec<_>>());
+
+    // An iterator whose `size_hint` only bounds the length from above, so `reserve` alone
+    // does not make room for all of it.
+    m.write().extend((8..1000u32).filter(|i| *i < 24));
+    assert_eq!(m.write().read().as_slice(), (0..24).collect::<Vec<_>>());
+}
+
+#[test]
+fn reserve_grows_the_allocation_once() {
+    let _test = enter_test();
+
+    let mut m = SyncPushVec::<u32>::new();
+    m.write().push(1);
+
+    let before = m.write().read().capacity();
+    m.write().reserve(100);
+
+    let grown = m.write().read().capacity();
+    assert!(grown > before);
+    assert!(grown >= 101);
+
+    // The room is already there, so this must not reallocate.
+    m.write().reserve(1);
+    assert_eq!(m.write().read().capacity(), grown);
+
+    assert_eq!(m.write().read().as_slice(), [1]);
+}
+
+#[test]
+#[should_panic(expected = "capacity overflow")]
+fn reserve_rejects_a_request_which_overflows() {
+    let _test = enter_test();
+
+    let mut m = SyncPushVec::<u32>::new();
+    m.write().push(1);
+    m.write().reserve(usize::MAX);
+}
