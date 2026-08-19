@@ -45,6 +45,12 @@ impl Group {
         unsafe { mem::transmute(ALIGNED_BYTES) }
     };
 
+    /// Loads a group of bytes starting at the given address with one atomic
+    /// load per byte.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for reads of `Group::WIDTH` bytes.
+    /// Other threads may only write those bytes with atomic stores.
     #[inline]
     unsafe fn load_bytes(ptr: *const u8) -> Self {
         unsafe {
@@ -60,6 +66,7 @@ impl Group {
     ///
     /// # Safety
     /// `ptr` must be valid for reads of `Group::WIDTH` bytes.
+    /// Other threads may only write those bytes with atomic stores.
     #[inline]
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
@@ -90,6 +97,7 @@ impl Group {
     /// # Safety
     /// `ptr` must be valid for reads of `Group::WIDTH` bytes and aligned to
     /// `mem::align_of::<Group>()`.
+    /// Other threads may only write those bytes with atomic stores.
     #[inline]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
         unsafe {

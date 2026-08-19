@@ -65,6 +65,7 @@ impl Group {
     ///
     /// # Safety
     /// `ptr` must be valid for reads of `Group::WIDTH` bytes.
+    /// Other threads may only write those bytes with atomic stores.
     #[inline]
     pub unsafe fn load(ptr: *const u8) -> Self {
         unsafe {
@@ -82,6 +83,7 @@ impl Group {
     /// # Safety
     /// `ptr` must be valid for reads of `Group::WIDTH` bytes and aligned to
     /// `mem::align_of::<Group>()`.
+    /// Other threads may only write those bytes with atomic stores.
     #[inline]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
         // FIXME: use is_aligned_to once it stabilizes
