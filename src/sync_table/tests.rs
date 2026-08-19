@@ -654,6 +654,36 @@ fn test_insert_conflicts() {
 }
 
 #[test]
+fn duplicate_insert_at_full_capacity_keeps_the_old_value() {
+    let _test = enter_test();
+
+    let m: SyncTable<u64, u64> = SyncTable::new();
+
+    // Fill the table right up to the point where the next insert has to grow it.
+    let mut keys = 0u64;
+    loop {
+        assert!(m.lock().write().insert(keys, keys * 10, None));
+        keys += 1;
+
+        if unsafe { m.current().info().growth_left.load(Ordering::Relaxed) } == 0 {
+            break;
+        }
+    }
+
+    let buckets = unsafe { m.current().info().buckets() };
+
+    // Already present, so this grows the table and then finds the key in the new one.
+    assert!(!m.lock().write().insert(0, 999, None));
+
+    assert!(unsafe { m.current().info().buckets() } > buckets);
+    assert_eq!(m.lock().read().len(), keys as usize);
+
+    for i in 0..keys {
+        assert_eq!(m.lock().read().get(&i, None).map(|(_, v)| *v), Some(i * 10));
+    }
+}
+
+#[test]
 fn test_expand() {
     let _test = enter_test();
     let m = SyncTable::new();
