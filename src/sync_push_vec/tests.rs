@@ -215,3 +215,71 @@ fn replace_sizes_by_the_actual_iterator_length() {
     assert_eq!(read.len(), 3);
     assert_eq!(read.capacity(), 3);
 }
+
+#[test]
+fn dropping_the_vector_drops_every_element_exactly_once() {
+    let _test = enter_test();
+
+    static CONSTRUCTED: AtomicUsize = AtomicUsize::new(0);
+    static DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+    // A heap allocation, so a missing drop leaks and a second one is a double free Miri sees.
+    struct Tracked(String);
+
+    impl Tracked {
+        fn new(i: usize) -> Self {
+            CONSTRUCTED.fetch_add(1, Ordering::SeqCst);
+            Tracked(format!("v{i}"))
+        }
+    }
+
+    impl Clone for Tracked {
+        fn clone(&self) -> Self {
+            CONSTRUCTED.fetch_add(1, Ordering::SeqCst);
+            Tracked(self.0.clone())
+        }
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            DROPPED.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    const PUSHES: usize = 40;
+
+    let mut vector = SyncPushVec::new();
+    {
+        let mut write = vector.write();
+        for i in 0..PUSHES {
+            write.push(Tracked::new(i));
+        }
+    }
+
+    let constructed = CONSTRUCTED.load(Ordering::SeqCst);
+
+    // The vector expanded on the way, so the tables it retired hold clones of their own.
+    assert!(
+        constructed > PUSHES,
+        "the vector never expanded, so no retired table held an element"
+    );
+    assert_eq!(
+        DROPPED.load(Ordering::SeqCst),
+        0,
+        "an element was dropped while the vector still owned it"
+    );
+
+    // The elements the current table holds are still the ones that were pushed.
+    assert_eq!(
+        vector
+            .as_mut_slice()
+            .iter()
+            .map(|value| value.0.clone())
+            .collect::<Vec<_>>(),
+        (0..PUSHES).map(|i| format!("v{i}")).collect::<Vec<_>>()
+    );
+
+    drop(vector);
+
+    assert_eq!(DROPPED.load(Ordering::SeqCst), constructed);
+}
