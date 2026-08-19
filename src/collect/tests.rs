@@ -203,17 +203,14 @@ fn collect_panics_while_pinned_without_events() {
 
 #[test]
 #[cfg(debug_assertions)]
+#[should_panic(expected = "Cannot call `collect` while pinned")]
 fn nested_pin_restores_outer_pinned_state() {
     let _test = enter_test();
 
-    let result = std::panic::catch_unwind(|| {
-        collect::pin(|_| {
-            collect::pin(|_| ());
-            collect::collect();
-        });
+    collect::pin(|_| {
+        collect::pin(|_| ());
+        collect::collect();
     });
-
-    assert!(result.is_err());
 }
 
 #[test]
