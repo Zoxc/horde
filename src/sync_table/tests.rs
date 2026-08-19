@@ -207,27 +207,46 @@ fn remove_drops_values_after_reclamation() {
     let _test = enter_test();
 
     #[derive(Clone)]
-    struct DropCounter(Arc<AtomicUsize>);
+    struct DropCounter {
+        // A heap allocation, so that a value dropped too early leaves the reference
+        // `remove` hands back dangling rather than merely stale.
+        name: String,
+        drops: Arc<AtomicUsize>,
+    }
 
     impl Drop for DropCounter {
         fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
 
     let drops = Arc::new(AtomicUsize::new(0));
     let mut table = SyncTable::new();
 
-    assert!(
-        table
-            .lock()
-            .write()
-            .insert(1usize, DropCounter(drops.clone()), None)
-    );
-    assert_eq!(
-        table.lock().write().remove(&1usize, None).map(|(k, _)| *k),
-        Some(1)
-    );
+    assert!(table.lock().write().insert(
+        1usize,
+        DropCounter {
+            name: "one".to_owned(),
+            drops: drops.clone(),
+        },
+        None
+    ));
+
+    {
+        let mut locked = table.lock();
+        let mut write = locked.write();
+        let (key, value) = write.remove(&1usize, None).expect("the key was inserted");
+
+        // `remove` only marks the bucket `DELETED`; the value must stay alive until the
+        // table holding it is reclaimed, since the pair it returns points into that bucket.
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            0,
+            "`remove` dropped the value while still returning a reference to it"
+        );
+        assert_eq!(*key, 1);
+        assert_eq!(value.name, "one");
+    }
 
     table
         .lock()
