@@ -342,12 +342,11 @@ impl TableInfoRef {
     ///
     /// There must be at least 1 empty bucket in the table.
     #[inline]
-    unsafe fn prepare_insert_slot(self, hash: u64) -> (usize, u8) {
+    unsafe fn prepare_insert_slot(self, hash: u64) -> usize {
         unsafe {
             let index = self.find_insert_slot(hash);
-            let old_ctrl = *self.ctrl(index);
             self.set_ctrl_h2(index, hash);
-            (index, old_ctrl)
+            index
         }
     }
 
@@ -607,7 +606,7 @@ impl<T> TableRef<T> {
                 // We can use a simpler version of insert() here since:
                 // - we know there is enough space in the table.
                 // - all elements are unique.
-                let (index, _) = new_table.info.prepare_insert_slot(hash);
+                let index = new_table.info.prepare_insert_slot(hash);
 
                 new_table.bucket(index).write(item);
 
@@ -680,8 +679,7 @@ impl<T> TableRef<T> {
                     let index = (probe_seq.pos + bit) & self.info().bucket_mask;
 
                     let bucket = self.bucket(index);
-                    let elm = self.bucket(index).as_ref();
-                    if likely(eq(elm)) {
+                    if likely(eq(bucket.as_ref())) {
                         return Ok((index, bucket));
                     }
 
