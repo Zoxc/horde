@@ -595,3 +595,68 @@ fn intern_get_insert() {
 
     test_interning(intern);
 }
+
+/// Removed elements leave tombstones which consume `growth_left`. Reclaiming them must not
+/// require a bigger table, otherwise insert/remove churn grows the table without bound.
+#[test]
+fn insert_remove_churn_does_not_grow_the_table() {
+    let _test = enter_test();
+    let m = SyncTable::new();
+
+    assert!(m.lock().write().insert(0u64, 0u64, None));
+    assert!(m.lock().write().remove(&0u64, None).is_some());
+
+    let buckets = unsafe { m.current().info().buckets() };
+
+    for i in 1..2000u64 {
+        assert!(m.lock().write().insert(i, i, None));
+        assert!(m.lock().write().remove(&i, None).is_some());
+    }
+
+    assert_eq!(m.lock().read().len(), 0);
+    assert_eq!(unsafe { m.current().info().buckets() }, buckets);
+
+    release();
+}
+
+/// A table which is mostly tombstones is rehashed into a smaller one, so churn on a table
+/// which once was large does not keep its memory around forever.
+#[test]
+fn insert_remove_churn_shrinks_a_mostly_empty_table() {
+    let _test = enter_test();
+    let m = SyncTable::new();
+
+    for i in 0..2000u64 {
+        assert!(m.lock().write().insert(i, i, None));
+    }
+
+    let grown = unsafe { m.current().info().buckets() };
+
+    for i in 0..1990u64 {
+        assert!(m.lock().write().remove(&i, None).is_some());
+    }
+
+    // The removals only leave tombstones behind, so the table is still fully grown.
+    assert_eq!(unsafe { m.current().info().buckets() }, grown);
+
+    // Churn until the tombstones exhaust `growth_left` and force a rehash.
+    for i in 2000..4000u64 {
+        assert!(m.lock().write().insert(i, i, None));
+        assert!(m.lock().write().remove(&i, None).is_some());
+    }
+
+    let shrunk = unsafe { m.current().info().buckets() };
+    assert!(
+        shrunk < grown,
+        "{shrunk} buckets is not smaller than {grown}"
+    );
+
+    let lock = m.lock();
+    let read = lock.read();
+    assert_eq!(read.len(), 10);
+    for i in 1990..2000u64 {
+        assert_eq!(read.get(&i, None), Some((&i, &i)));
+    }
+
+    release();
+}

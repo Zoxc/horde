@@ -731,7 +731,7 @@ impl<T: Clone> TableRef<T> {
         hasher: impl Fn(&S, &T) -> u64,
     ) -> TableRef<T> {
         unsafe {
-            debug_assert!(buckets >= self.info().buckets());
+            debug_assert!(bucket_mask_to_capacity(buckets - 1) >= self.info().items());
 
             TableRef::from_iter::<_, _, _, false>(
                 self.iter().map(|bucket| bucket.as_ref().clone()),
@@ -1278,7 +1278,12 @@ impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
 
         let full_capacity = bucket_mask_to_capacity(unsafe { table.info().bucket_mask });
 
-        let new_capacity = usize::max(new_items, full_capacity + 1);
+        let new_capacity = if new_items <= full_capacity / 2 {
+            // Mostly tombstones, so aim for a new table which is at least 50% empty.
+            new_items * 2 // This cannot overflow as it's at most `full_capacity`
+        } else {
+            usize::max(new_items, full_capacity + 1)
+        };
 
         unsafe {
             debug_assert!(table.info().items() <= new_capacity);
