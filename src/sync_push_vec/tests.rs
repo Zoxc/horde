@@ -177,14 +177,21 @@ fn test_expand() {
 
     assert_eq!(m.lock().read().len(), 0);
 
-    let mut i = 0;
+    // Take the capacity after the first push: a new vector has no allocation at all.
+    m.lock().write().push(0);
     let old_raw_cap = m.lock().read().capacity();
+
+    let mut i = 1;
     while old_raw_cap == m.lock().read().capacity() {
         m.lock().write().push(i);
         i += 1;
     }
 
+    assert!(m.lock().read().capacity() > old_raw_cap);
     assert_eq!(m.lock().read().len(), i);
+
+    // Everything the copy into the bigger table moved must still be there, in order.
+    assert_eq!(m.lock().read().as_slice(), (0..i).collect::<Vec<_>>());
 
     release();
 }
