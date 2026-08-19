@@ -665,6 +665,7 @@ impl<'a, T> Write<'a, T> {
                 .next_retired
                 .set(TableRef::<T>::empty().data.as_ptr());
 
+            // We walk the retired list to append, but we expect this to say cheap in practice.
             if let Some(tail) = self.table.retired.get().retired_iter().last() {
                 tail.info().next_retired.set(table.data.as_ptr());
             } else {
