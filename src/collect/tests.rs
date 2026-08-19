@@ -570,3 +570,115 @@ fn register_into_empty_collector_still_collects_later() {
     checked.wait();
     worker.join().unwrap();
 }
+
+#[test]
+fn defer_runs_a_static_callback() {
+    let _test = enter_test();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    let calls2 = calls.clone();
+    collect::defer(move || {
+        calls2.fetch_add(1, Ordering::SeqCst);
+    });
+
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    collect::collect();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+#[should_panic(expected = "Cannot call `release` while pinned")]
+fn release_cannot_be_called_while_pinned() {
+    let _test = enter_test();
+
+    collect::pin(|_| collect::release());
+}
+
+#[test]
+#[should_panic(expected = "Deferred callbacks cannot call `release`")]
+fn callback_cannot_release() {
+    let _test = enter_test();
+
+    // SAFETY: the callback borrows nothing.
+    unsafe {
+        collect::defer_unchecked(collect::release);
+    }
+
+    collect::collect();
+}
+
+#[test]
+fn the_first_panic_payload_is_the_one_re_raised() {
+    let _test = enter_test();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+
+    // SAFETY: neither callback borrows anything.
+    unsafe {
+        collect::defer_unchecked(|| panic!("first"));
+        collect::defer_unchecked(|| panic!("second"));
+    }
+
+    let calls2 = calls.clone();
+    // SAFETY: the callback owns its capture.
+    unsafe {
+        collect::defer_unchecked(move || {
+            calls2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    let payload = std::panic::catch_unwind(collect::collect).expect_err("did not panic");
+
+    assert_eq!(payload.downcast_ref::<&str>().copied(), Some("first"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn pin_after_the_exit_guard_is_rejected() {
+    let _test = enter_test();
+
+    static OUTCOME: Mutex<Option<String>> = Mutex::new(None);
+
+    struct PinOnExit;
+
+    impl Drop for PinOnExit {
+        fn drop(&mut self) {
+            // Nothing may escape a thread local destructor: an unwind out of one aborts the
+            // process, so the outcome is reported back rather than asserted on here.
+            let outcome = match std::panic::catch_unwind(|| collect::pin(|_| ())) {
+                Ok(()) => "`pin` did not panic".to_owned(),
+                Err(payload) => payload.downcast_ref::<&str>().map_or_else(
+                    || "a payload which is not a `&str`".to_owned(),
+                    |message| (*message).to_owned(),
+                ),
+            };
+
+            *OUTCOME.lock().unwrap_or_else(|error| error.into_inner()) = Some(outcome);
+        }
+    }
+
+    thread_local! {
+        static PIN_ON_EXIT: PinOnExit = const { PinOnExit };
+    }
+
+    thread::spawn(|| {
+        // Registered before the collector's exit guard, so this destructor runs after it.
+        PIN_ON_EXIT.with(|_| ());
+
+        collect::pin(|_| ());
+        collect::release();
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        OUTCOME
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_deref(),
+        Some("Cannot call `pin` in thread local destructors after the thread exit guard")
+    );
+}
