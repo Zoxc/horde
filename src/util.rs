@@ -65,13 +65,23 @@ pub(crate) fn align_up(value: usize, align: usize) -> Option<usize> {
 
 /// An [UnsafeCell] for use in a `static` whose non-`Sync` parts are never accessed.
 #[repr(transparent)]
-pub(crate) struct StaticUnsafeCell<T>(pub(crate) UnsafeCell<T>);
+pub(crate) struct StaticUnsafeCell<T> {
+    value: UnsafeCell<T>,
+}
 
 impl<T> StaticUnsafeCell<T> {
     /// # Safety
     /// Any part of `value` which is not `Sync` must never be accessed.
     pub(crate) const unsafe fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
+        Self {
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Returns a pointer to the wrapped value.
+    #[inline]
+    pub(crate) const fn get(&self) -> *mut T {
+        self.value.get()
     }
 }
 

@@ -142,7 +142,7 @@ impl<T> TableRef<T> {
             info: TableInfo,
         }
 
-        const EMPTY_REF: *mut TableInfo = unsafe { (&raw const (*EMPTY.0.get()).info).cast_mut() };
+        const EMPTY_REF: *mut TableInfo = unsafe { (&raw const (*EMPTY.get()).info).cast_mut() };
 
         // SAFETY: The `next_retired` `Cell` of the static table is never accessed;
         // `RetiredIter` stops at it and it is never retired itself.

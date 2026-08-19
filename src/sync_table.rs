@@ -377,7 +377,7 @@ impl TableInfoRef {
         }
 
         const EMPTY_TABLE_REF: TableInfoRef =
-            unsafe { TableInfoRef::new((&raw const (*EMPTY_TABLE.0.get()).info).cast_mut()) };
+            unsafe { TableInfoRef::new((&raw const (*EMPTY_TABLE.get()).info).cast_mut()) };
 
         // SAFETY: The `next_retired` `Cell` of the static table is never accessed;
         // `RetiredIter` stops at it and it is never retired itself.
