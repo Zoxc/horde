@@ -22,7 +22,7 @@ fn test_layout_rejects_capacities_above_isize_max_bytes() {
 }
 
 #[test]
-fn test_iter() {
+fn test_push_appends_in_order() {
     let _test = enter_test();
     let mut m = SyncPushVec::new();
     m.write().push(1);
