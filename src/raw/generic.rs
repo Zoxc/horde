@@ -111,7 +111,10 @@ impl Group {
     /// `EMPTY`.
     #[inline]
     pub fn match_empty(self) -> BitMask {
-        self.match_byte(EMPTY)
+        // If the high bit is set, then the byte must be either:
+        // 1111_1111 (EMPTY) or 1000_0000 (DELETED).
+        // So we can just check if the top two bits are 1 by ANDing them.
+        BitMask((self.0 & (self.0 << 1) & repeat(0x80)).to_le())
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which are
