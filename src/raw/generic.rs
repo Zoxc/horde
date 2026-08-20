@@ -33,6 +33,7 @@ fn repeat(byte: u8) -> GroupWord {
 ///
 /// This implementation uses a word-sized integer.
 #[derive(Copy, Clone)]
+#[repr(transparent)]
 pub struct Group(GroupWord);
 
 // We perform all operations in the native endianess, and convert to
