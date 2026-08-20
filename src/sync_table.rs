@@ -541,6 +541,8 @@ impl<T> TableRef<T> {
 
                 if mem::needs_drop::<T>() {
                     for index in 0..self.info().buckets() {
+                        // We drop `DELETED` buckets too here as they are not dropped
+                        // when they are removed.
                         if *self.info.ctrl(index) != EMPTY {
                             self.bucket(index).drop();
                         }

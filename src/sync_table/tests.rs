@@ -366,6 +366,8 @@ fn test_remove() {
     assert_eq!(m.lock().read().len(), 0);
 }
 
+/// `remove` only tombstones the bucket, so `TableRef::free` dropping every bucket which is
+/// not `EMPTY` — rather than only the full ones — is what eventually drops the value.
 #[test]
 fn remove_drops_values_after_reclamation() {
     let _test = enter_test();
