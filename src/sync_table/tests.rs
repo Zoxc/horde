@@ -5,6 +5,7 @@ use crate::collect::Pin;
 use crate::collect::enter_test;
 use crate::collect::pin;
 use crate::collect::release;
+use crate::util::leak_as_miri_root;
 use std::collections::hash_map::RandomState;
 use std::mem;
 use std::{
@@ -146,7 +147,7 @@ fn replace_then_forget_leaks_retired_values() {
         .write()
         .replace(Vec::<(usize, DropCounter)>::new(), 0);
 
-    mem::forget(table);
+    leak_as_miri_root(table);
 
     crate::collect::collect();
 

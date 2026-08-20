@@ -87,3 +87,24 @@ impl<T> StaticUnsafeCell<T> {
 
 // SAFETY: Upheld by the caller of `new`.
 unsafe impl<T> Sync for StaticUnsafeCell<T> {}
+
+/// Leaks `value` and marks it as a root for Miri's leak check, so neither it nor anything
+/// reachable from it is reported as leaked. Used by tests which deliberately leak.
+#[cfg(test)]
+pub(crate) fn leak_as_miri_root<T>(value: T) -> &'static T {
+    let leaked: &'static T = Box::leak(Box::new(value));
+
+    #[cfg(miri)]
+    {
+        unsafe extern "Rust" {
+            /// Marks the block `ptr` points to, and everything reachable from it, as memory
+            /// which is intentionally still allocated when the program terminates.
+            fn miri_static_root(ptr: *const u8);
+        }
+
+        // SAFETY: `leaked` points to the start of a live allocation.
+        unsafe { miri_static_root(leaked as *const T as *const u8) };
+    }
+
+    leaked
+}

@@ -4,6 +4,7 @@ use super::TableRef;
 use crate::collect::enter_test;
 use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
+use crate::util::leak_as_miri_root;
 use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -162,7 +163,7 @@ fn replace_then_forget_leaks_retired_elements() {
     vector.lock().write().push(DropCounter(drops.clone()));
     vector.lock().write().replace(Vec::<DropCounter>::new(), 0);
 
-    mem::forget(vector);
+    leak_as_miri_root(vector);
 
     crate::collect::collect();
 
