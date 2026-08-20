@@ -41,8 +41,6 @@ fn high_align() {
     table.get_mut(&A(1), None);
 
     table.lock().write().insert_new(A(1), 1, None);
-
-    release();
 }
 
 #[test]
@@ -60,8 +58,6 @@ fn low_align_with_padding_before_table_info() {
     assert!(read.get(&2, None).is_some());
     assert!(read.get(&3, None).is_some());
     assert_eq!(read.iter().count(), 3);
-
-    release();
 }
 
 #[test]
@@ -73,8 +69,6 @@ fn test_create_capacity_zero() {
 
     assert!(m.lock().read().get(&1, None).is_some());
     assert!(m.lock().read().get(&0, None).is_none());
-
-    release();
 }
 
 #[test]
@@ -84,8 +78,6 @@ fn clone_empty_reuses_static_table() {
     let cloned = m.clone();
 
     assert_eq!(m.current().info.as_ptr(), cloned.current().info.as_ptr());
-
-    release();
 }
 
 #[test]
@@ -171,7 +163,6 @@ fn test_replace() {
     assert_eq!(m.lock().read().get(&3, None), None);
     assert_eq!(m.lock().read().get(&2, None), None);
     assert_eq!(m.lock().read().get(&5, None), None);
-    release();
 }
 
 #[test]
@@ -185,8 +176,6 @@ fn replace_empty_preserves_requested_capacity() {
         assert_eq!(m.read(pin).len(), 0);
         assert!(m.read(pin).capacity() >= 100);
     });
-
-    release();
 }
 
 #[test]
@@ -253,8 +242,6 @@ fn swapped_locks_keep_their_guards() {
     assert_eq!(a.lock().read().get(&2, None).map(|(_, v)| *v), Some(2));
     assert_eq!(a.lock().read().get(&1, None), None);
     assert_eq!(b.lock().read().get(&2, None), None);
-
-    release();
 }
 
 #[test]
@@ -268,7 +255,6 @@ fn test_remove() {
     assert_eq!(m.lock().read().get(&2, None), None);
     assert_eq!(m.lock().read().get(&5, None), None);
     assert_eq!(m.lock().read().len(), 0);
-    release();
 }
 
 #[test]
@@ -342,8 +328,6 @@ fn test_insert() {
     assert_eq!(m.lock().read().len(), 2);
     assert_eq!(*m.lock().read().get(&1, None).unwrap().1, 2);
     assert_eq!(*m.lock().read().get(&2, None).unwrap().1, 4);
-
-    release();
 }
 
 #[test]
@@ -371,8 +355,6 @@ fn concurrent_get_and_insert() {
                     Some(2)
                 );
             });
-
-            release();
         });
 
         scope.spawn(|| {
@@ -381,8 +363,6 @@ fn concurrent_get_and_insert() {
             barrier.wait();
         });
     });
-
-    release();
 }
 
 #[test]
@@ -409,8 +389,6 @@ fn concurrent_get_and_remove() {
             pin(|pin| {
                 assert!(table.read(pin).get(&1, None).is_none());
             });
-
-            release();
         });
 
         scope.spawn(|| {
@@ -426,8 +404,6 @@ fn concurrent_get_and_remove() {
             barrier.wait();
         });
     });
-
-    release();
 }
 
 #[test]
@@ -457,8 +433,6 @@ fn concurrent_insert_remove_and_get() {
                     Some(4)
                 );
             });
-
-            release();
         });
 
         scope.spawn(|| {
@@ -476,8 +450,6 @@ fn concurrent_insert_remove_and_get() {
             barrier.wait();
         });
     });
-
-    release();
 }
 
 /// A pinned reader keeps the table it reads from alive, however often a writer replaces it.
@@ -635,8 +607,6 @@ fn test_iter() {
 
         assert_eq!(v, vec![(1, 2), (2, 4), (5, 3), (9, 4)]);
     });
-
-    release();
 }
 
 #[test]
@@ -649,8 +619,6 @@ fn test_insert_conflicts() {
     assert_eq!(*m.lock().read().get(&9, None).unwrap().1, 4);
     assert_eq!(*m.lock().read().get(&5, None).unwrap().1, 3);
     assert_eq!(*m.lock().read().get(&1, None).unwrap().1, 2);
-
-    release();
 }
 
 #[test]
@@ -711,8 +679,6 @@ fn test_expand() {
             Some(key)
         );
     }
-
-    release();
 }
 
 #[test]
@@ -725,8 +691,6 @@ fn test_find() {
         None => panic!(),
         Some(v) => assert_eq!(*v.1, 2),
     }
-
-    release();
 }
 
 #[test]
@@ -755,8 +719,6 @@ fn test_capacity_not_less_than_len() {
         a.lock().write().insert(item, 0, None);
         assert!(a.read(pin).capacity() > a.read(pin).len());
     });
-
-    release();
 }
 
 #[test]
@@ -773,8 +735,6 @@ fn rehash() {
             assert!(table.read(pin).get(&(i + 100), None).is_none());
         }
     });
-
-    release();
 }
 
 const INTERN_SIZE: u64 = if cfg!(miri) { 35 } else { 26334 };
@@ -814,8 +774,6 @@ fn test_interning(intern: impl Fn(&SyncTable<u64, u64>, u64, u64, Pin<'_>) -> bo
     });
 
     assert_equal(&mut test, &control);
-
-    release();
 }
 
 #[test]
@@ -887,8 +845,6 @@ fn insert_remove_churn_does_not_grow_the_table() {
 
     assert_eq!(m.lock().read().len(), 0);
     assert_eq!(unsafe { m.current().info().buckets() }, buckets);
-
-    release();
 }
 
 /// A table which is mostly tombstones is rehashed into a smaller one, so churn on a table
@@ -929,8 +885,6 @@ fn insert_remove_churn_shrinks_a_mostly_empty_table() {
     for i in 1990..2000u64 {
         assert_eq!(read.get(&i, None), Some((&i, &i)));
     }
-
-    release();
 }
 
 #[test]
