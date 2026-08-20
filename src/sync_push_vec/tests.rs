@@ -1,13 +1,16 @@
 #![cfg(test)]
 
 use super::TableRef;
+use crate::collect;
 use crate::collect::enter_test;
 use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 use crate::util::leak_as_miri_root;
 use std::mem;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 #[test]
 #[should_panic(expected = "capacity overflow")]
@@ -437,4 +440,133 @@ fn reserve_rejects_a_request_which_overflows() {
     let mut m = SyncPushVec::<u32>::new();
     m.write().push(1);
     m.write().reserve(usize::MAX);
+}
+
+#[test]
+fn concurrent_read_across_a_table_retirement() {
+    let _test = enter_test();
+
+    #[derive(Clone)]
+    struct Tracked {
+        // A heap allocation, so reading a freed table is a use-after-free Miri can see.
+        name: String,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    const ITEMS: usize = 4;
+    const EXTRA: usize = 40;
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let value = |i: usize| Tracked {
+        name: format!("v{i}"),
+        drops: drops.clone(),
+    };
+
+    let vector: SyncPushVec<Tracked> = SyncPushVec::with_capacity(ITEMS);
+    {
+        let mut lock = vector.lock();
+        for i in 0..ITEMS {
+            lock.write().push(value(i));
+        }
+    }
+
+    let pinned = Barrier::new(2);
+    let retired = Barrier::new(2);
+    let checked = Barrier::new(2);
+
+    let mut freed_while_pinned = 0;
+    let mut retired_while_pinned = 0;
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let observed = collect::pin(|pin| {
+                // A slice of the table as it is now, borrowed for as long as the pin. The
+                // writer replaces that table below.
+                let elements = vector.read(pin).as_slice();
+
+                pinned.wait();
+                retired.wait();
+
+                // The table this points into has been retired and the writer has tried to free
+                // it since, so this reads what the reclamation has to keep alive.
+                let observed: Vec<_> = elements.iter().map(|value| value.name.clone()).collect();
+
+                checked.wait();
+
+                observed
+            });
+
+            release();
+
+            // Assert once the writer is no longer waiting on a barrier for this thread.
+            for (i, name) in observed.into_iter().enumerate() {
+                assert_eq!(name, format!("v{i}"));
+            }
+        });
+
+        pinned.wait();
+
+        {
+            let mut lock = vector.lock();
+
+            // Grow the vector several times over, retiring the reader's table on the way. The
+            // lock is held throughout, so nothing is pruned in between.
+            for i in ITEMS..ITEMS + EXTRA {
+                lock.write().push(value(i));
+            }
+        }
+
+        // Give the collector every chance to hand the retired tables back, then take the lock,
+        // which prunes.
+        for _ in 0..4 {
+            collect::collect();
+        }
+        drop(vector.lock());
+
+        freed_while_pinned = drops.load(Ordering::SeqCst);
+        retired_while_pinned = vector.retired_head.get().retired_iter().count();
+
+        retired.wait();
+        checked.wait();
+    });
+
+    // Assert once the reader has been joined, so a failure cannot strand it on a barrier.
+    assert!(
+        retired_while_pinned > 0,
+        "no table was retired, so nothing tested the pin"
+    );
+    assert_eq!(
+        freed_while_pinned, 0,
+        "a table was freed while a reader was pinned on it"
+    );
+
+    // With the reader unpinned and gone, the retired tables can go too.
+    for _ in 0..4 {
+        release();
+        collect::collect();
+    }
+
+    // Taking the lock prunes the retired list.
+    let lock = vector.lock();
+
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 0);
+    assert!(drops.load(Ordering::SeqCst) > 0);
+
+    // The elements the retired tables held were copies; the current one still has its own.
+    assert_eq!(
+        lock.read()
+            .as_slice()
+            .iter()
+            .map(|value| value.name.clone())
+            .collect::<Vec<_>>(),
+        (0..ITEMS + EXTRA)
+            .map(|i| format!("v{i}"))
+            .collect::<Vec<_>>()
+    );
 }
