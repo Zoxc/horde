@@ -277,6 +277,9 @@ impl TableInfoRef {
 
     /// Sets a control byte, and possibly also the replicated control byte at
     /// the end of the array.
+    ///
+    /// # Safety
+    /// The stores are not atomic, so no other thread may access the table.
     #[inline]
     unsafe fn set_ctrl(self, index: usize, ctrl: u8) {
         unsafe {
@@ -321,6 +324,9 @@ impl TableInfoRef {
 
     /// Sets a control byte to the hash, and possibly also the replicated control byte at
     /// the end of the array.
+    ///
+    /// # Safety
+    /// The stores are not atomic, so no other thread may access the table.
     #[inline]
     unsafe fn set_ctrl_h2(self, index: usize, hash: u64) {
         unsafe { self.set_ctrl(index, h2(hash)) }
@@ -344,6 +350,9 @@ impl TableInfoRef {
     /// `DELETED` bucket in the middle of a probe sequence would hide the elements behind it.
     ///
     /// There must be at least 1 empty bucket in the table.
+    ///
+    /// # Safety
+    /// The stores are not atomic, so no other thread may access the table.
     #[inline]
     unsafe fn prepare_insert_slot(self, hash: u64) -> usize {
         unsafe {
@@ -608,6 +617,8 @@ impl<T> TableRef<T> {
                 // We can use a simpler version of insert() here since:
                 // - we know there is enough space in the table.
                 // - all elements are unique.
+                // - the table is still private to this thread, so the control bytes can be
+                //   written non-atomically.
                 let index = new_table.info.prepare_insert_slot(hash);
 
                 new_table.bucket(index).write(item);
