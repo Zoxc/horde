@@ -11,6 +11,7 @@ type GroupWord = cfg_select! {
         target_pointer_width = "64",
         target_arch = "aarch64",
         target_arch = "x86_64",
+        target_arch = "wasm32",
     ) => { u64 }
     _ => { u32 }
 };
