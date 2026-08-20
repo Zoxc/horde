@@ -1646,13 +1646,10 @@ impl<'a> PotentialSlot<'a> {
     }
 }
 
-/// An iterator over the entries of a `HashMap`.
+/// An iterator over the entries of a [SyncTable].
 ///
-/// This `struct` is created by the [`iter`] method on [`HashMap`]. See its
+/// This `struct` is created by the [Read::iter] method on [Read]. See its
 /// documentation for more.
-///
-/// [`iter`]: struct.HashMap.html#method.iter
-/// [`HashMap`]: struct.HashMap.html
 pub struct Iter<'a, K, V> {
     inner: RawIterRange<(K, V)>,
     marker: PhantomData<&'a (K, V)>,
