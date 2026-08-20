@@ -725,3 +725,85 @@ fn a_callback_may_call_back_into_the_collector() {
     collect::collect();
     assert_eq!(reentrant.load(Ordering::SeqCst), 1);
 }
+
+/// `defer` from inside a callback takes the collector lock again, and the callback it registers
+/// must run in a later cycle rather than in the batch that is already running.
+#[test]
+fn a_callback_may_defer() {
+    let _test = enter_test();
+
+    let ran = Arc::new(AtomicUsize::new(0));
+    let ran2 = ran.clone();
+
+    collect::defer(move || {
+        collect::defer(move || {
+            ran2.fetch_add(1, Ordering::SeqCst);
+        });
+    });
+
+    // The inner callback is deferred while this collection is running, so it is only eligible
+    // for the next one.
+    collect::collect();
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+
+    collect::collect();
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+/// `defer_by_id` from inside a callback takes the collector lock again, and the id it registers
+/// is marked ready by a later collection.
+#[test]
+fn a_callback_may_defer_by_id() {
+    let _test = enter_test();
+
+    // The flag is heap allocated and kept alive by `ready` for the whole test, so the pointer
+    // registered inside the callback stays valid until it is stored to below.
+    let ready = Arc::new(AtomicBool::new(false));
+    let ready2 = ready.clone();
+
+    collect::defer(move || {
+        // SAFETY: `ready` keeps the flag alive past the store, and it is registered once.
+        unsafe {
+            collect::defer_by_id(&*ready2 as *const AtomicBool);
+        }
+    });
+
+    collect::collect();
+    assert!(!ready.load(Ordering::SeqCst));
+
+    collect::collect();
+    assert!(ready.load(Ordering::SeqCst));
+}
+
+/// `cancel_by_ids` from inside a callback takes the collector lock again and cancels ids that
+/// are still registered. This is what `SyncTable`'s drop glue does for its retired tables.
+///
+/// The ids are registered from inside the callback on purpose: ids that were part of the batch
+/// being collected have already been marked ready under the lock before any callback runs, so
+/// they can no longer be cancelled at all.
+#[test]
+fn a_callback_may_cancel_by_ids() {
+    let _test = enter_test();
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let kept = Arc::new(AtomicBool::new(false));
+    let cancelled2 = cancelled.clone();
+    let kept2 = kept.clone();
+
+    collect::defer(move || {
+        // SAFETY: both flags outlive the callback and the collection that stores to `kept`,
+        // and each is registered once.
+        unsafe {
+            collect::defer_by_id(&*cancelled2 as *const AtomicBool);
+            collect::defer_by_id(&*kept2 as *const AtomicBool);
+        }
+
+        collect::cancel_by_ids([&*cancelled2 as *const AtomicBool]);
+    });
+
+    collect::collect();
+    collect::collect();
+
+    assert!(!cancelled.load(Ordering::SeqCst));
+    assert!(kept.load(Ordering::SeqCst));
+}
