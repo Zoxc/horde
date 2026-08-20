@@ -34,7 +34,24 @@ pub(crate) fn enter_test() -> TestGuard {
     for _ in 0..4 {
         collect::collect();
     }
+    assert_collector_is_idle();
     TestGuard { _lock: lock }
+}
+
+/// Panics if a thread is still registered with the collector.
+///
+/// `release` and `collect` only act on the calling thread, so the cleanup above cannot remove a
+/// thread another test left behind. Such a thread stays `Busy` forever, no epoch can complete,
+/// and every test that reclaims memory afterwards silently fails. Check for that here so the
+/// blame lands next to the test that leaked instead of spreading over the rest of the suite.
+fn assert_collector_is_idle() {
+    let collector = collect::COLLECTOR.lock();
+    assert!(
+        collector.threads.is_empty(),
+        "a previous test left {} thread(s) registered with the collector, {} of them busy",
+        collector.threads.len(),
+        collector.busy_count,
+    );
 }
 
 // Check that running `collect` with only a single thread active will collect garbage.
