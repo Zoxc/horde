@@ -1334,6 +1334,8 @@ impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
             // Mostly tombstones, so aim for a new table which is at least 50% empty.
             new_items * 2 // This cannot overflow as it's at most `full_capacity`
         } else {
+            // The `full_capacity + 1` cannot overflow as any
+            // `bucket_mask_to_capacity` result is always below usize::MAX.
             usize::max(new_items, full_capacity + 1)
         };
 
