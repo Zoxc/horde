@@ -498,6 +498,7 @@ fn register_into_empty_collector_still_collects_later() {
 
     let registered = Arc::new(Barrier::new(2));
     let deferred = Arc::new(Barrier::new(2));
+    let main_quiet = Arc::new(Barrier::new(2));
     let worker_quiet = Arc::new(Barrier::new(2));
     let checked = Arc::new(Barrier::new(2));
 
@@ -505,6 +506,7 @@ fn register_into_empty_collector_still_collects_later() {
         let free = free.clone();
         let registered = registered.clone();
         let deferred = deferred.clone();
+        let main_quiet = main_quiet.clone();
         let worker_quiet = worker_quiet.clone();
         let checked = checked.clone();
 
@@ -519,6 +521,9 @@ fn register_into_empty_collector_still_collects_later() {
             // The callback is deferred after this thread registered.
             deferred.wait();
 
+            // Report a quiescent state only after the main thread did, so this thread is the
+            // one completing the epoch.
+            main_quiet.wait();
             collect::collect();
             worker_quiet.wait();
 
@@ -541,6 +546,8 @@ fn register_into_empty_collector_still_collects_later() {
     deferred.wait();
 
     collect::collect();
+    main_quiet.wait();
+
     worker_quiet.wait();
     collect::collect();
 
