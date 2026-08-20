@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use super::{SyncTable, TableRef};
+use super::{SyncTable, TableRef, shard_index_by_hash};
 use crate::collect::Pin;
 use crate::collect::enter_test;
 use crate::collect::pin;
@@ -974,6 +974,104 @@ fn intern_get_insert() {
     }
 
     test_interning(intern);
+}
+
+/// `get_with_eq` and `get_from_hash` look an element up by hash and a caller supplied match,
+/// with no `Borrow<Q>` relationship to the key at all.
+#[test]
+fn lookups_by_hash_and_a_custom_match() {
+    let _test = enter_test();
+
+    let table: SyncTable<u64, u64> = SyncTable::new();
+    for i in 0..64u64 {
+        assert!(table.lock().write().insert(i, i * 10, None));
+    }
+
+    let hash = table.hash_key(&7);
+
+    pin(|pin| {
+        let read = table.read(pin);
+
+        // The value takes part in the match, which `get` cannot express.
+        assert_eq!(
+            read.get_with_eq(hash, |key, value| *key == 7 && *value == 70)
+                .map(|(_, value)| *value),
+            Some(70)
+        );
+        assert!(
+            read.get_with_eq(hash, |key, value| *key == 7 && *value == 71)
+                .is_none()
+        );
+
+        assert_eq!(
+            read.get_from_hash(hash, |key| *key == 7)
+                .map(|(_, value)| *value),
+            Some(70)
+        );
+        assert!(read.get_from_hash(hash, |_| false).is_none());
+    });
+}
+
+/// `shard_index_by_hash` takes the bits just below the top seven, which `SyncTable` reserves for
+/// its control bytes, so sharding by it does not correlate with the buckets inside each shard.
+#[test]
+fn shard_index_by_hash_ignores_the_control_byte_bits() {
+    for shards in [1usize, 2, 4, 16, 256] {
+        let mut seen = vec![false; shards];
+
+        for i in 0..1024u64 {
+            let hash = i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let index = shard_index_by_hash(hash, shards);
+
+            assert!(index < shards);
+            assert_eq!(index, shard_index_by_hash(hash ^ (0x7F << 57), shards));
+
+            seen[index] = true;
+        }
+
+        assert!(
+            seen.into_iter().all(|seen| seen),
+            "{shards} shards were not all reachable"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "shards.is_power_of_two()")]
+fn shard_index_by_hash_rejects_a_shard_count_which_is_not_a_power_of_two() {
+    shard_index_by_hash(0, 3);
+}
+
+/// `remove` reports nothing for a key which is not there, and leaves no tombstone behind for it.
+#[test]
+fn remove_reports_nothing_for_a_missing_key() {
+    let _test = enter_test();
+
+    let table: SyncTable<u64, u64> = SyncTable::new();
+    for i in 0..8u64 {
+        assert!(table.lock().write().insert(i, i, None));
+    }
+
+    let capacity = table.lock().read().capacity();
+
+    assert!(table.lock().write().remove(&100, None).is_none());
+    assert_eq!(table.lock().read().len(), 8);
+    assert_eq!(table.lock().read().capacity(), capacity);
+
+    assert_eq!(
+        table
+            .lock()
+            .write()
+            .remove(&1, None)
+            .map(|(_, value)| *value),
+        Some(1)
+    );
+
+    // The second removal of the same key finds only the tombstone the first one left.
+    assert!(table.lock().write().remove(&1, None).is_none());
+
+    assert_eq!(table.lock().read().len(), 7);
+    assert!(table.lock().read().capacity() < capacity);
 }
 
 /// `PotentialSlot`'s fast path is the one where the slot it names is still empty. Everything
