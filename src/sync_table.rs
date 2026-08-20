@@ -547,14 +547,14 @@ impl<T> TableRef<T> {
         H: Fn(&S, &T) -> u64,
         const CHECK_LEN: bool,
     >(
-        iter: I,
+        mut iter: I,
         iter_size: usize,
         capacity: usize,
         hash_builder: &S,
         hasher: H,
     ) -> TableRef<T> {
         if iter_size == 0 {
-            debug_assert!(iter.count() == 0);
+            debug_assert!(iter.next().is_none());
 
             if capacity > 0 {
                 let buckets = capacity_to_buckets(capacity).expect("capacity overflow");

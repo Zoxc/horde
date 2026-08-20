@@ -245,12 +245,12 @@ impl<T> TableRef<T> {
     }
 
     fn from_maybe_empty_iter<I: Iterator<Item = T>, const CHECK_LEN: bool>(
-        iter: I,
+        mut iter: I,
         iter_size: usize,
         capacity: usize,
     ) -> TableRef<T> {
         if iter_size == 0 {
-            debug_assert!(iter.count() == 0);
+            debug_assert!(iter.next().is_none());
 
             if capacity > 0 {
                 TableRef::allocate(capacity)
