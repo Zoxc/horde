@@ -379,19 +379,24 @@ fn collect_after_epoch_completion_without_new_defers_runs_pending_callbacks() {
 fn cancel_by_id_prevents_matching_callbacks() {
     let _test = enter_test();
 
-    let first = AtomicBool::new(false);
-    let second = AtomicBool::new(false);
+    // `defer_by_id` takes a raw pointer which has to stay valid until the collector stores
+    // through it or the registration is cancelled. A stack local only satisfies that on the
+    // happy path: an assertion failure below pops the frame with the registration outstanding,
+    // and the store then lands on dead storage. `static`s are valid for the whole program.
+    static FIRST: AtomicBool = AtomicBool::new(false);
+    static SECOND: AtomicBool = AtomicBool::new(false);
 
+    // SAFETY: both flags outlive the collector, and each is registered once.
     unsafe {
-        collect::defer_by_id(&first);
-        collect::defer_by_id(&second);
+        collect::defer_by_id(&FIRST);
+        collect::defer_by_id(&SECOND);
     }
 
-    collect::cancel_by_ids([&first as *const AtomicBool]);
+    collect::cancel_by_ids([&FIRST as *const AtomicBool]);
     collect::collect();
 
-    assert!(!first.load(Ordering::SeqCst));
-    assert!(second.load(Ordering::SeqCst));
+    assert!(!FIRST.load(Ordering::SeqCst));
+    assert!(SECOND.load(Ordering::SeqCst));
 }
 
 #[test]
@@ -416,20 +421,24 @@ fn cancel_by_id_removes_pending_callbacks() {
     ready.wait();
     collect::collect();
 
-    let ready_flag = AtomicBool::new(false);
+    // A `static` rather than a local: the registration below outlives this frame whenever an
+    // assertion fails or the helper's `join` panics, and the collector stores through it later.
+    static READY_FLAG: AtomicBool = AtomicBool::new(false);
+
+    // SAFETY: the flag outlives the collector, and it is registered once.
     unsafe {
-        collect::defer_by_id(&ready_flag);
+        collect::defer_by_id(&READY_FLAG);
     }
 
     collect::collect();
-    assert!(!ready_flag.load(Ordering::SeqCst));
+    assert!(!READY_FLAG.load(Ordering::SeqCst));
 
     release_thread.wait();
     handle.join().unwrap();
 
-    collect::cancel_by_ids([&ready_flag as *const AtomicBool]);
+    collect::cancel_by_ids([&READY_FLAG as *const AtomicBool]);
     collect::collect();
-    assert!(!ready_flag.load(Ordering::SeqCst));
+    assert!(!READY_FLAG.load(Ordering::SeqCst));
 }
 
 /// A thread that registers while its `seen_events` already matches `EVENTS` must still be able
