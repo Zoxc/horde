@@ -976,6 +976,95 @@ fn intern_get_insert() {
     test_interning(intern);
 }
 
+/// `PotentialSlot`'s fast path is the one where the slot it names is still empty. Everything
+/// that makes the `get_potential`/`insert_new` interning protocol correct when another thread
+/// inserts the same key in between lives on the cold path, which a single thread can reach by
+/// doing that insert itself.
+#[test]
+fn a_potential_slot_which_filled_up_falls_back_to_the_table() {
+    let _test = enter_test();
+
+    let table: SyncTable<u64, u64> = SyncTable::new();
+
+    // Allocate a table with room to spare, so the insert below fills the slot rather than
+    // replacing the table under it.
+    for i in 100..110u64 {
+        assert!(table.lock().write().insert(i, i, None));
+    }
+
+    pin(|pin| {
+        let hash = table.hash_key(&1);
+        let slot = table
+            .read(pin)
+            .get_potential(&1, Some(hash))
+            .expect_err("the key is not in the table yet");
+
+        // Stands in for the concurrent writer the protocol exists for.
+        assert!(table.lock().write().insert(1, 2, None));
+
+        // The slot is no longer empty, so `get` has to probe the table instead.
+        assert_eq!(
+            slot.get(table.read(pin), &1, Some(hash)).map(|(_, v)| *v),
+            Some(2)
+        );
+
+        // And `refresh` hands back the element which appeared rather than a slot which would
+        // insert a duplicate through it.
+        match slot.refresh(table.read(pin), &1, Some(hash)) {
+            Ok((key, value)) => {
+                assert_eq!(*key, 1);
+                assert_eq!(*value, 2);
+            }
+            Err(_) => panic!("`refresh` did not find the element which appeared"),
+        }
+
+        // A slot for a key which is still missing refreshes into another slot, taking the fast
+        // path in both calls.
+        let missing = table
+            .read(pin)
+            .get_potential(&2, None)
+            .expect_err("the key is not in the table");
+        assert!(missing.get(table.read(pin), &2, None).is_none());
+        assert!(missing.refresh(table.read(pin), &2, None).is_err());
+    });
+}
+
+/// `reserve_one` is how the interning protocol makes room before it derives a slot, so that the
+/// `insert_new` which follows cannot have to grow the table under it.
+#[test]
+fn reserve_one_makes_room_for_the_next_insert() {
+    let _test = enter_test();
+
+    let table: SyncTable<u64, u64> = SyncTable::new();
+
+    // Fill the table right up to the point where the next insert has to grow it.
+    let mut keys = 0u64;
+    loop {
+        assert!(table.lock().write().insert(keys, keys, None));
+        keys += 1;
+
+        if unsafe { table.current().info().growth_left.load(Ordering::Relaxed) } == 0 {
+            break;
+        }
+    }
+
+    let buckets = unsafe { table.current().info().buckets() };
+    table.lock().write().reserve_one();
+
+    assert!(unsafe { table.current().info().buckets() } > buckets);
+    assert!(unsafe { table.current().info().growth_left.load(Ordering::Relaxed) } > 0);
+
+    // With room left it is a no-op, so a protocol which calls it before every insert does not
+    // grow the table on every insert.
+    let buckets = unsafe { table.current().info().buckets() };
+    table.lock().write().reserve_one();
+    assert_eq!(unsafe { table.current().info().buckets() }, buckets);
+
+    for i in 0..keys {
+        assert_eq!(table.lock().read().get(&i, None).map(|(_, v)| *v), Some(i));
+    }
+}
+
 /// Removed elements leave tombstones which consume `growth_left`. Reclaiming them must not
 /// require a bigger table, otherwise insert/remove churn grows the table without bound.
 #[test]
