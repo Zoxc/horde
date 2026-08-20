@@ -1,4 +1,4 @@
-use super::EMPTY;
+use super::{DELETED, EMPTY};
 use super::bitmask::BitMask;
 use core::mem;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -20,7 +20,7 @@ pub type BitMaskWord = GroupWord;
 pub const BITMASK_STRIDE: usize = 8;
 // We only care about the highest bit of each byte for the mask.
 #[allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
-pub const BITMASK_MASK: BitMaskWord = 0x8080_8080_8080_8080_u64 as GroupWord;
+pub const BITMASK_MASK: BitMaskWord = u64::from_ne_bytes([DELETED; 8]) as GroupWord;
 
 /// Helper function to replicate a byte across a `GroupWord`.
 #[inline]
@@ -104,7 +104,7 @@ impl Group {
         // This algorithm is derived from
         // http://graphics.stanford.edu/~seander/bithacks.html##ValueInWord
         let cmp = self.0 ^ repeat(byte);
-        BitMask((cmp.wrapping_sub(repeat(0x01)) & !cmp & repeat(0x80)).to_le())
+        BitMask((cmp.wrapping_sub(repeat(0x01)) & !cmp & repeat(DELETED)).to_le())
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which are
@@ -114,7 +114,7 @@ impl Group {
         // If the high bit is set, then the byte must be either:
         // 1111_1111 (EMPTY) or 1000_0000 (DELETED).
         // So we can just check if the top two bits are 1 by ANDing them.
-        BitMask((self.0 & (self.0 << 1) & repeat(0x80)).to_le())
+        BitMask((self.0 & (self.0 << 1) & repeat(DELETED)).to_le())
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which are
@@ -122,7 +122,7 @@ impl Group {
     #[inline]
     pub fn match_empty_or_deleted(self) -> BitMask {
         // A byte is EMPTY or DELETED iff the high bit is set
-        BitMask((self.0 & repeat(0x80)).to_le())
+        BitMask((self.0 & repeat(DELETED)).to_le())
     }
 
     /// Returns a `BitMask` indicating all bytes in the group which are full.

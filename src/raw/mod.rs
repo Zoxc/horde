@@ -24,4 +24,7 @@ cfg_select! {
 pub mod bitmask;
 
 /// Control byte value for an empty bucket.
-const EMPTY: u8 = 0b1111_1111;
+pub(crate) const EMPTY: u8 = 0b1111_1111;
+
+/// Control byte value for a deleted bucket.
+pub(crate) const DELETED: u8 = 0b1000_0000;

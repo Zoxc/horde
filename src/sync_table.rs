@@ -4,7 +4,7 @@
 
 use crate::{
     collect::{self, Pin, pin},
-    raw::{bitmask::BitMask, imp::Group},
+    raw::{DELETED, EMPTY, bitmask::BitMask, imp::Group},
     scopeguard::guard,
     util::{StaticUnsafeCell, align_up, cold_path, likely, make_insert_hash, unlikely},
 };
@@ -1712,12 +1712,6 @@ fn h2(hash: u64) -> u8 {
     let top7 = hash >> (hash_len * 8 - 7);
     (top7 & 0x7f) as u8 // truncation
 }
-
-/// Control byte value for an empty bucket.
-const EMPTY: u8 = 0b1111_1111;
-
-/// Control byte value for a deleted bucket.
-const DELETED: u8 = 0b1000_0000;
 
 /// Checks whether a control byte represents a full bucket (top bit is clear).
 #[inline]
