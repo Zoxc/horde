@@ -1153,6 +1153,8 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 }
 
 impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V, S> {
+    /// Cloning can give an inconsistent view of the table if there are concurrent writers.
+    /// Hold [SyncTable::lock] across the clone if a consistent view is needed.
     fn clone(&self) -> SyncTable<K, V, S> {
         pin(|_pin| {
             let table = self.current();
