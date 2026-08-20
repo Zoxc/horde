@@ -21,6 +21,7 @@ use std::{
     marker::PhantomData,
     mem,
     panic::{self, AssertUnwindSafe},
+    process,
     sync::LazyLock,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread::{self, ThreadId},
@@ -326,12 +327,15 @@ fn collect_cold() {
             if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| {
                 callback();
             })) {
-                // Keep the first payload and drop the rest inside `catch_unwind`, so a
-                // panicking payload destructor cannot skip the remaining callbacks.
                 if panic.is_none() {
                     panic = Some(payload);
                 } else {
-                    let _ = panic::catch_unwind(AssertUnwindSafe(move || drop(payload)));
+                    let abort = guard((), |_| {
+                        eprintln!("fatal: a panic payload's destructor panicked inside `collect`");
+                        process::abort()
+                    });
+                    drop(payload);
+                    mem::forget(abort);
                 }
             }
         }
