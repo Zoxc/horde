@@ -75,8 +75,11 @@ pub struct SyncPushVec<T> {
 
     lock: Mutex<()>,
 
-    // A linked list of retired tables
-    retired: Cell<TableRef<T>>,
+    // A linked list of retired tables. When the list is empty the head points to the static
+    // empty table and the tail is `None`. `try_prune_tables` relies on the head sentinel to read
+    // `can_free` without first testing for an empty list.
+    retired_head: Cell<TableRef<T>>,
+    retired_tail: Cell<Option<TableRef<T>>>,
 
     // Mark `T` as invariant and tell dropck that we own instances of `T`.
     marker: PhantomData<(T, fn(T) -> T)>,
@@ -109,6 +112,15 @@ impl<T> Clone for TableRef<T> {
     }
 }
 
+impl<T> PartialEq for TableRef<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+
+impl<T> Eq for TableRef<T> {}
+
 struct RetiredIter<T> {
     next: TableRef<T>,
 }
@@ -118,7 +130,7 @@ impl<T> Iterator for RetiredIter<T> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if unsafe { self.next.is_static_empty() } {
+        if self.next == TableRef::empty() {
             None
         } else {
             let table = self.next;
@@ -171,12 +183,6 @@ impl<T> TableRef<T> {
                 marker: PhantomData,
             }
         }
-    }
-
-    // Checks if this table is `EMPTY`
-    #[inline]
-    unsafe fn is_static_empty(self) -> bool {
-        unsafe { self.info().capacity == 0 }
     }
 
     #[inline]
@@ -386,7 +392,7 @@ impl<T> SyncPushVec<T> {
     fn drop_impl(&mut self) {
         unsafe {
             collect::cancel_by_ids(
-                self.retired
+                self.retired_head
                     .get_mut()
                     .retired_iter()
                     .filter(|table| !table.info().can_free.load(Ordering::Acquire))
@@ -395,7 +401,7 @@ impl<T> SyncPushVec<T> {
 
             self.current().free();
 
-            for table in self.retired.get_mut().retired_iter() {
+            for table in self.retired_head.get_mut().retired_iter() {
                 table.free();
             }
         }
@@ -424,7 +430,8 @@ impl<T> SyncPushVec<T> {
                 .data
                 .as_ptr(),
             ),
-            retired: Cell::new(TableRef::empty()),
+            retired_head: Cell::new(TableRef::empty()),
+            retired_tail: Cell::new(None),
             marker: PhantomData,
             lock: Mutex::new(()),
         }
@@ -631,7 +638,7 @@ impl<'a, T> Write<'a, T> {
     fn try_prune_tables(&mut self) {
         if unlikely(unsafe {
             self.table
-                .retired
+                .retired_head
                 .get()
                 .info()
                 .can_free
@@ -645,11 +652,15 @@ impl<'a, T> Write<'a, T> {
     #[inline(never)]
     fn prune_tables(&mut self) {
         unsafe {
-            let retired = &self.table.retired;
-            while retired.get().info().can_free.load(Ordering::Acquire) {
-                // Remove from the list before calling `free` to avoid double free if a destructor panics..
-                let table = retired.get();
-                retired.set(TableRef::from_ptr(table.info().next_retired.get()));
+            let head = &self.table.retired_head;
+            while head.get().info().can_free.load(Ordering::Acquire) {
+                // Remove from the list before calling `free` to avoid double free if a destructor panics.
+                let table = head.get();
+                head.set(TableRef::from_ptr(table.info().next_retired.get()));
+                if self.table.retired_tail.get() == Some(table) {
+                    self.table.retired_tail.set(None);
+                }
+
                 table.free();
             }
         }
@@ -662,7 +673,7 @@ impl<'a, T> Write<'a, T> {
             .current
             .store(new_table.data.as_ptr(), Ordering::Release);
 
-        if unsafe { table.info().capacity == 0 } {
+        if table == TableRef::empty() {
             return;
         }
 
@@ -672,12 +683,11 @@ impl<'a, T> Write<'a, T> {
                 .next_retired
                 .set(TableRef::<T>::empty().data.as_ptr());
 
-            // We walk the retired list to append, but we expect this to say cheap in practice.
-            if let Some(tail) = self.table.retired.get().retired_iter().last() {
-                tail.info().next_retired.set(table.data.as_ptr());
-            } else {
-                self.table.retired.set(table);
+            match self.table.retired_tail.get() {
+                Some(tail) => tail.info().next_retired.set(table.data.as_ptr()),
+                None => self.table.retired_head.set(table),
             }
+            self.table.retired_tail.set(Some(table));
         }
 
         // Keep ownership of retired tables in `self` so forgetting the container leaks instead of

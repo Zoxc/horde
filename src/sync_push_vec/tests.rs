@@ -2,6 +2,7 @@
 
 use super::TableRef;
 use crate::collect::enter_test;
+use crate::collect::release;
 use crate::sync_push_vec::SyncPushVec;
 use crate::util::leak_as_miri_root;
 use std::mem;
@@ -135,6 +136,64 @@ fn test_replace_empty_preserves_requested_capacity() {
     m.lock().write().replace(Vec::<i32>::new(), 8);
     assert_eq!(m.lock().read().as_slice(), []);
     assert_eq!(m.lock().read().capacity(), 8);
+}
+
+/// Retirement appends through a tail pointer, so once the list has been pruned empty that tail
+/// must not keep pointing at a freed table. `LockedWrite::write` does not prune, so holding one
+/// lock across the replaces lets the retired list build up.
+#[test]
+fn retiring_after_the_list_is_pruned_starts_a_new_list() {
+    let _test = enter_test();
+    let vector = SyncPushVec::with_capacity(1);
+
+    let mut lock = vector.lock();
+    for i in 0..3usize {
+        lock.write().replace(vec![i], 0);
+    }
+    drop(lock);
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 3);
+
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+
+    // Taking the lock prunes, which drains the whole list.
+    drop(vector.lock());
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 0);
+
+    vector.lock().write().replace(vec![9usize], 0);
+
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 1);
+}
+
+/// Pruning that stops part way through the list must leave the tail alone, or the tables still on
+/// the list are orphaned and never freed.
+#[test]
+fn a_partial_prune_keeps_the_tail() {
+    let _test = enter_test();
+    let vector = SyncPushVec::with_capacity(1);
+
+    let mut lock = vector.lock();
+    lock.write().replace(vec![0usize], 0);
+
+    // Only the first retired table becomes freeable; the lock is held throughout so nothing is
+    // pruned in between.
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+    lock.write().replace(vec![1usize], 0);
+    drop(lock);
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 2);
+
+    // Frees the first table and stops at the second.
+    drop(vector.lock());
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 1);
+
+    // The third table must be appended after the second rather than replacing the head.
+    vector.lock().write().replace(vec![2usize], 0);
+    assert_eq!(vector.retired_head.get().retired_iter().count(), 2);
 }
 
 #[test]

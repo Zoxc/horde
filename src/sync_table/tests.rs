@@ -212,6 +212,115 @@ fn replace_then_forget_leaks_retired_values() {
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
+/// Retirement appends through a tail pointer, so once the list has been pruned empty that tail
+/// must not keep pointing at a freed table.
+#[test]
+fn retiring_after_the_list_is_pruned_starts_a_new_list() {
+    let _test = enter_test();
+    let table = SyncTable::new_with(RandomState::new(), 1);
+
+    // Each `replace` retires the current table by appending it at the tail.
+    for i in 0..3usize {
+        table.lock_no_prune().write().replace(vec![(i, i)], 0);
+    }
+    assert_eq!(table.retired_head.get().retired_iter().count(), 3);
+
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+    table.lock_no_prune().write().prune();
+
+    assert_eq!(table.retired_head.get().retired_iter().count(), 0);
+
+    table
+        .lock_no_prune()
+        .write()
+        .replace(vec![(9usize, 9usize)], 0);
+
+    assert_eq!(table.retired_head.get().retired_iter().count(), 1);
+}
+
+/// Pruning that stops part way through the list must leave the tail alone, or the tables still on
+/// the list are orphaned and never freed.
+#[test]
+fn a_partial_prune_keeps_the_tail() {
+    let _test = enter_test();
+    let table = SyncTable::new_with(RandomState::new(), 1);
+
+    table
+        .lock_no_prune()
+        .write()
+        .replace(vec![(0usize, 0usize)], 0);
+
+    // Only the first retired table becomes freeable.
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+    table
+        .lock_no_prune()
+        .write()
+        .replace(vec![(1usize, 1usize)], 0);
+    assert_eq!(table.retired_head.get().retired_iter().count(), 2);
+
+    // Frees the first table and stops at the second.
+    table.lock_no_prune().write().prune();
+    assert_eq!(table.retired_head.get().retired_iter().count(), 1);
+
+    // The third table must be appended after the second rather than replacing the head.
+    table
+        .lock_no_prune()
+        .write()
+        .replace(vec![(2usize, 2usize)], 0);
+    assert_eq!(table.retired_head.get().retired_iter().count(), 2);
+}
+
+/// `prune` clears the tail before freeing the table it points at, so a destructor that panics
+/// part way through pruning cannot leave the tail dangling at freed memory.
+#[test]
+fn a_panicking_destructor_does_not_leave_the_tail_dangling() {
+    let _test = enter_test();
+
+    #[derive(Clone)]
+    struct PanicOnDrop;
+
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            panic!("destructor");
+        }
+    }
+
+    let table = SyncTable::new_with(RandomState::new(), 1);
+    assert!(
+        table
+            .lock_no_prune()
+            .write()
+            .insert(1usize, PanicOnDrop, None)
+    );
+
+    // Retire the table holding `PanicOnDrop`; it is the only entry, so it is both head and tail.
+    // The replacement asks for a real allocation so that it can be retired in turn below.
+    table.lock_no_prune().write().replace(Vec::new(), 1);
+    assert_eq!(table.retired_head.get().retired_iter().count(), 1);
+
+    for _ in 0..4 {
+        release();
+        crate::collect::collect();
+    }
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        table.lock_no_prune().write().prune();
+    }));
+    assert!(panicked.is_err());
+
+    // The list is empty again, so the next retirement must start a fresh list rather than write
+    // through the tail into the table the panic freed.
+    assert_eq!(table.retired_head.get().retired_iter().count(), 0);
+    table.lock_no_prune().write().replace(Vec::new(), 0);
+    assert_eq!(table.retired_head.get().retired_iter().count(), 1);
+}
+
 /// Swapping whole `LockedWrite`s is the one detaching operation that still compiles.
 /// It's harmless since each guard moves along with the table it protects.
 #[test]
@@ -550,7 +659,7 @@ fn concurrent_read_across_a_table_retirement() {
             write.prune();
 
             freed_while_pinned = drops.load(Ordering::SeqCst);
-            retired_while_pinned = write.table.retired.get().retired_iter().count();
+            retired_while_pinned = write.table.retired_head.get().retired_iter().count();
         }
 
         retired.wait();
@@ -577,7 +686,7 @@ fn concurrent_read_across_a_table_retirement() {
     let mut write = lock.write();
     write.prune();
 
-    assert_eq!(write.table.retired.get().retired_iter().count(), 0);
+    assert_eq!(write.table.retired_head.get().retired_iter().count(), 0);
     assert!(drops.load(Ordering::SeqCst) > 0);
 
     // The elements the retired tables held were copies; the current table still has its own.
