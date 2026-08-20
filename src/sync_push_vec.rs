@@ -541,7 +541,7 @@ impl<'a, T> Write<'a, T> {
 }
 
 impl<'a, T: Clone> Write<'a, T> {
-    /// Inserts a new element into the end of the table, and returns a refernce to it along
+    /// Inserts a new element into the end of the table, and returns a reference to it along
     /// with its index.
     #[inline]
     pub fn push(&mut self, value: T) -> (&T, usize) {
