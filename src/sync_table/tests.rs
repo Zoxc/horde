@@ -830,6 +830,45 @@ fn test_capacity_not_less_than_len() {
     });
 }
 
+/// Removals leave tombstones which insertions never reuse, so the room left in the table
+/// shrinks with every removal.
+#[test]
+fn removals_lower_the_reported_capacity() {
+    let _test = enter_test();
+    let m: SyncTable<u64, u64> = SyncTable::new();
+
+    assert!(m.lock().write().insert(0u64, 0u64, None));
+    let capacity = m.lock().read().capacity() as u64;
+
+    for i in 1..capacity {
+        assert!(m.lock().write().insert(i, i, None));
+    }
+
+    {
+        let lock = m.lock();
+        let read = lock.read();
+        assert_eq!(read.len() as u64, capacity);
+        assert_eq!(read.capacity() as u64, capacity);
+    }
+
+    for i in 0..capacity {
+        assert!(m.lock().write().remove(&i, None).is_some());
+    }
+
+    {
+        let lock = m.lock();
+        let read = lock.read();
+        assert_eq!(read.len(), 0);
+        // The tombstones consumed the whole table, so nothing fits in it anymore.
+        assert_eq!(read.capacity(), 0);
+    }
+
+    // Which is what the next insert does, rather than filling one of the free slots.
+    let table = m.current().info.as_ptr();
+    assert!(m.lock().write().insert(capacity, 0, None));
+    assert_ne!(m.current().info.as_ptr(), table);
+}
+
 #[test]
 fn rehash() {
     let _test = enter_test();

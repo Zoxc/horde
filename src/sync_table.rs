@@ -1089,9 +1089,15 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
     }
 
     /// Returns the number of elements the map can hold without reallocating.
+    ///
+    /// This value may be inaccurate if there's concurrent writers.
     #[inline]
     pub fn capacity(self) -> usize {
-        unsafe { bucket_mask_to_capacity(self.table.current().info().bucket_mask) }
+        let table = self.table.current();
+        unsafe {
+            bucket_mask_to_capacity(table.info().bucket_mask)
+                .saturating_sub(table.info().tombstones.load(Ordering::Acquire))
+        }
     }
 
     /// Returns the number of elements in the table.
