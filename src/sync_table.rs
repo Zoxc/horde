@@ -1812,7 +1812,9 @@ pub fn shard_index_by_hash(hash: u64, shards: usize) -> usize {
     assert!(shards.is_power_of_two());
     let shard_bits = shards.trailing_zeros() as usize;
 
-    let hash_len_bits = mem::size_of_val(&hash) * 8;
+    // Assume the hash is potentially just a `usize` which can be smaller than u64
+    let hash_len_bits = usize::min(mem::size_of::<usize>(), mem::size_of::<u64>()) * 8;
+
     // Ignore the top 7 bits as we use these for bucket hashes and get the next `shard_bits` highest bits.
     // hashbrown also uses the lowest bits, so we can't use those
     let shift = (hash_len_bits - 7).saturating_sub(shard_bits);
