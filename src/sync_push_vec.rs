@@ -228,18 +228,19 @@ impl<T> TableRef<T> {
     #[inline]
     unsafe fn free(self) {
         unsafe {
-            let capacity = self.info().capacity;
-            if capacity > 0 {
+            if self.info().capacity > 0 {
+                let _dealloc = guard(self, |table| {
+                    let (layout, info_offset) =
+                        Self::layout(table.info().capacity).unwrap_unchecked();
+                    dealloc((table.data.as_ptr() as *mut u8).sub(info_offset), layout)
+                });
+
                 if mem::needs_drop::<T>() {
                     let items = self.info().items.load(Ordering::Relaxed);
                     for i in 0..items {
                         self.data(i).drop_in_place();
                     }
                 }
-
-                let (layout, info_offset) = Self::layout(capacity).unwrap_unchecked();
-
-                dealloc((self.data.as_ptr() as *mut u8).sub(info_offset), layout)
             }
         }
     }

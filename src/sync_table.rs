@@ -529,6 +529,12 @@ impl<T> TableRef<T> {
     unsafe fn free(self) {
         unsafe {
             if self.info().bucket_mask > 0 {
+                let _dealloc = guard(self, |table| {
+                    let (layout, info_offset) =
+                        Self::layout(table.info().buckets()).unwrap_unchecked();
+                    dealloc(table.info.as_ptr().cast::<u8>().sub(info_offset), layout)
+                });
+
                 if mem::needs_drop::<T>() {
                     for index in 0..self.info().buckets() {
                         if *self.info.ctrl(index) != EMPTY {
@@ -536,8 +542,6 @@ impl<T> TableRef<T> {
                         }
                     }
                 }
-                let (layout, info_offset) = Self::layout(self.info().buckets()).unwrap_unchecked();
-                dealloc(self.info.as_ptr().cast::<u8>().sub(info_offset), layout)
             }
         }
     }
