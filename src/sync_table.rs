@@ -871,8 +871,8 @@ impl<K, V, S> SyncTable<K, V, S> {
     ///
     /// # Safety
     ///
-    /// It's up to the caller to ensure only one [Write] handle exists at a time, through a
-    /// happens-before relationship, across all threads.
+    /// It's up to the caller to ensure no other [Write] handle, [LockedWrite] handle or `&mut self`
+    /// borrow exists at the same time, through a happens-before relationship, across all threads.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, K, V, S> {
         Write::new_and_prune(self)
@@ -885,8 +885,8 @@ impl<K, V, S> SyncTable<K, V, S> {
     ///
     /// # Safety
     ///
-    /// It's up to the caller to ensure only one [Write] handle exists at a time, through a
-    /// happens-before relationship, across all threads.
+    /// It's up to the caller to ensure no other [Write] handle, [LockedWrite] handle or `&mut self`
+    /// borrow exists at the same time, through a happens-before relationship, across all threads.
     #[inline]
     pub unsafe fn unsafe_write_no_prune(&self) -> Write<'_, K, V, S> {
         Write { table: self }

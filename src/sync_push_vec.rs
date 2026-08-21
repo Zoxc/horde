@@ -456,8 +456,8 @@ impl<T> SyncPushVec<T> {
     ///
     /// # Safety
     ///
-    /// It's up to the caller to ensure only one [Write] handle exists at a time, through a
-    /// happens-before relationship, across all threads.
+    /// It's up to the caller to ensure no other [Write] handle, [LockedWrite] handle or `&mut self`
+    /// borrow exists at the same time, through a happens-before relationship, across all threads.
     #[inline]
     pub unsafe fn unsafe_write(&self) -> Write<'_, T> {
         Write::new(self)
