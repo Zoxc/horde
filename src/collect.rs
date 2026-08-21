@@ -8,6 +8,12 @@
 //! regularly call [collect] to allow memory reclamation to progress.
 //! When threads are unable to do so, for example due to sleeping, they should call [release] so
 //! they no longer delay reclamation.
+//!
+//! Participating threads are also released when they exit, by a thread local destructor.
+//! Threads which exit skipping those destructors must call [release] first, otherwise
+//! reclamation for the whole process will stall. Releasing do not run any callbacks
+//! so it could be useful to call [collect] after joining that last thread that use the collector,
+//! or have a [release] and [collect] pair prior to its exit, to ensure all callbacks run.
 
 use crate::{
     scopeguard::guard,

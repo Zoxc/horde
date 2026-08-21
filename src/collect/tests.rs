@@ -807,3 +807,30 @@ fn a_callback_may_cancel_by_ids() {
     assert!(!cancelled.load(Ordering::SeqCst));
     assert!(kept.load(Ordering::SeqCst));
 }
+
+/// A thread is released when it exits, and a release runs no callbacks. Garbage deferred before
+/// the last participating thread exited therefore waits for a `collect` call from someone else,
+/// even though no thread is left to delay it.
+#[test]
+fn garbage_from_an_exited_thread_waits_for_a_collect_call() {
+    let _test = enter_test();
+
+    let freed = Arc::new(AtomicUsize::new(0));
+    let freed2 = freed.clone();
+
+    thread::spawn(move || {
+        collect::pin(|_| ());
+
+        collect::defer(move || {
+            freed2.fetch_add(1, Ordering::SeqCst);
+        });
+    })
+    .join()
+    .unwrap();
+
+    // The collector has no registered threads left, but nothing ran the callback.
+    assert_eq!(freed.load(Ordering::SeqCst), 0);
+
+    collect::collect();
+    assert_eq!(freed.load(Ordering::SeqCst), 1);
+}
