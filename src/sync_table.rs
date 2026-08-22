@@ -292,15 +292,11 @@ impl TableInfoRef {
             // we mask the initial index for unaligned loads, but we write it
             // anyways because it makes the set_ctrl implementation simpler.
             //
-            // If there are fewer buckets than Group::WIDTH then this code will
-            // replicate the buckets at the end of the trailing group. For example
-            // with 2 buckets and a group size of 4, the control bytes will look
-            // like this:
-            //
-            //     Real    |             Replicated
-            // ---------------------------------------------
-            // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
-            // ---------------------------------------------
+            // Tables always have at least Group::WIDTH buckets, so the replica of a
+            // bucket always lands in the trailing group and the two groups never
+            // overlap: `capacity_to_buckets` floors the bucket count at Group::WIDTH
+            // and `TableRef::allocate` asserts it. The only smaller table is the
+            // static empty one, which is never written to.
             let index2 =
                 ((index.wrapping_sub(Group::WIDTH)) & self.info().bucket_mask) + Group::WIDTH;
 
@@ -332,6 +328,7 @@ impl TableInfoRef {
         unsafe { self.set_ctrl(index, h2(hash)) }
     }
 
+    /// Marks the bucket at `index` as full with the tag of `hash`.
     #[inline]
     unsafe fn record_item_insert_at(self, index: usize, hash: u64) {
         unsafe {
