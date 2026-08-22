@@ -55,6 +55,10 @@ where
     hash_builder.hash_one(val)
 }
 
+/// Rounds `value` up to the next multiple of `align`, returning `None` if that
+/// would overflow a `usize`.
+///
+/// `align` must be a power of two and non-zero.
 #[inline]
 pub(crate) fn align_up(value: usize, align: usize) -> Option<usize> {
     debug_assert!(align.is_power_of_two());
