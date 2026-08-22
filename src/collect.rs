@@ -120,6 +120,7 @@ thread_local! {
         Data {
             state: Cell::new(State::Unregistered),
             seen_events: Cell::new(0),
+            thread_id: Cell::new(None),
         }
     };
     static EXIT_GUARD: ExitGuard = const { ExitGuard };
@@ -147,6 +148,25 @@ struct Data {
     state: Cell<State>,
     /// Last observed value of [EVENTS].
     seen_events: Cell<usize>,
+    /// The thread's id, lazily initialized by [Data::thread_id].
+    thread_id: Cell<Option<ThreadId>>,
+}
+
+impl Data {
+    /// Returns the id used to key the thread in [Collector::threads].
+    #[inline]
+    fn thread_id(&self) -> ThreadId {
+        match self.thread_id.get() {
+            Some(thread_id) => thread_id,
+            None => cold_path(|| {
+                DATA.with(|data| {
+                    let thread_id = thread::current().id();
+                    data.thread_id.set(Some(thread_id));
+                    thread_id
+                })
+            }),
+        }
+    }
 }
 
 /// Releases the current thread from the collector when the thread exits.
@@ -232,7 +252,7 @@ fn pin_cold() {
                 })
             }
 
-            if COLLECTOR.lock().register() {
+            if COLLECTOR.lock().register(data.thread_id()) {
                 // The collector has pending callbacks.
                 // Set `seen_events` to ensure the next `collect` call triggers.
                 data.seen_events
@@ -262,7 +282,7 @@ pub fn release() {
         State::Unregistered => (),
         State::Registered => {
             data.state.set(State::Unregistered);
-            COLLECTOR.lock().unregister();
+            COLLECTOR.lock().unregister(data.thread_id());
         }
         State::Pinned => cold_path(|| panic!("Cannot call `release` while pinned")),
         State::Collecting => cold_path(|| panic!("Deferred callbacks cannot call `release`")),
@@ -318,7 +338,7 @@ fn collect_cold() {
 
             // Check if we could block any deferred methods
             let mut callbacks = if let State::Registered = old_state {
-                collector.quiet()
+                collector.quiet(data.thread_id())
             } else {
                 collector.collect_unregistered()
             };
@@ -437,21 +457,17 @@ impl Collector {
     ///
     /// Returns `true` if the collector holds callbacks.
     #[must_use]
-    fn register(&mut self) -> bool {
+    fn register(&mut self, thread_id: ThreadId) -> bool {
         self.busy_count += 1;
-        assert!(
-            self.threads
-                .insert(thread::current().id(), ThreadState::Busy)
-                .is_none()
-        );
+        assert!(self.threads.insert(thread_id, ThreadState::Busy).is_none());
 
         !(self.pending.is_empty()
             && self.previous_deferred.is_empty()
             && self.current_deferred.is_empty())
     }
 
-    fn unregister(&mut self) {
-        let state = self.threads.remove(&thread::current().id()).unwrap();
+    fn unregister(&mut self, thread_id: ThreadId) {
+        let state = self.threads.remove(&thread_id).unwrap();
         if state == ThreadState::Busy {
             self.busy_count -= 1;
 
@@ -464,7 +480,7 @@ impl Collector {
     }
 
     fn collect_unregistered(&mut self) -> Callbacks {
-        debug_assert!(!self.threads.contains_key(&thread::current().id()));
+        debug_assert!(!self.threads.contains_key(&data(|data| data.thread_id())));
 
         let mut callbacks = mem::take(&mut self.pending);
 
@@ -476,8 +492,8 @@ impl Collector {
         callbacks
     }
 
-    fn quiet(&mut self) -> Callbacks {
-        let state = self.threads.get_mut(&thread::current().id()).unwrap();
+    fn quiet(&mut self, thread_id: ThreadId) -> Callbacks {
+        let state = self.threads.get_mut(&thread_id).unwrap();
 
         let mut callbacks = mem::take(&mut self.pending);
 
@@ -498,7 +514,7 @@ impl Collector {
                 DATA.with(|data| data.seen_events.set(EVENTS.load(Ordering::Relaxed)));
 
                 // Mark ourselves as quiet again
-                callbacks.extend(self.quiet());
+                callbacks.extend(self.quiet(thread_id));
             }
         }
 
