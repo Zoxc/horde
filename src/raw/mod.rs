@@ -28,3 +28,5 @@ pub(crate) const EMPTY: u8 = 0b1111_1111;
 
 /// Control byte value for a deleted bucket.
 pub(crate) const DELETED: u8 = 0b1000_0000;
+
+const _: () = assert!(core::mem::align_of::<imp::Group>() == imp::Group::WIDTH);
