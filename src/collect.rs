@@ -54,7 +54,7 @@ pub struct Pin<'a> {
 /// The closure will be called by the [collect] method.
 ///
 /// This deferred callback must not call [pin] or [collect].
-/// It may call [defer], [defer_by_id] and [cancel_by_ids] which are useful for inner destructors.
+/// It may call [defer] which is useful for inner destructors.
 ///
 /// Deferred callbacks run in a later collection cycle on whichever thread performs that collection.
 /// They are typically used to destroy or free data that was removed from a lock-free structure.
@@ -93,7 +93,7 @@ pub(crate) fn cancel_by_ids(ids: impl IntoIterator<Item = *const AtomicBool>) {
 /// The closure will be called by the [collect] method.
 ///
 /// This deferred callback must not call [pin] or [collect].
-/// It may call [defer], [defer_by_id] and [cancel_by_ids] which are useful for inner destructors.
+/// It may call [defer] which is useful for inner destructors.
 ///
 /// Deferred callbacks run in a later collection cycle on whichever thread performs that collection.
 /// They are typically used to destroy or free data that was removed from a lock-free structure.
