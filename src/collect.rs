@@ -59,7 +59,8 @@ pub struct Pin<'a> {
 /// Deferred callbacks run in a later collection cycle on whichever thread performs that collection.
 /// They are typically used to destroy or free data that was removed from a lock-free structure.
 pub fn defer(f: impl FnOnce() + Send + 'static) {
-    COLLECTOR.lock().defer(Box::new(f));
+    let f = Box::new(f);
+    COLLECTOR.lock().defer(f);
 }
 
 /// Schedules `ready` to be set to `true` after all threads leave their current pinned regions.
