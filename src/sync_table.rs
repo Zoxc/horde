@@ -349,9 +349,6 @@ impl TableInfoRef {
     /// Searches for an empty bucket which is suitable for inserting a new element
     /// and sets the hash for that slot.
     ///
-    /// Tombstones are never reused: a lookup stops only on an empty bucket, so filling a
-    /// `DELETED` bucket in the middle of a probe sequence would hide the elements behind it.
-    ///
     /// There must be at least 1 empty bucket in the table.
     ///
     /// # Safety
@@ -366,6 +363,9 @@ impl TableInfoRef {
     }
 
     /// Searches for an empty bucket which is suitable for inserting a new element.
+    ///
+    /// This looks for `EMPTY` buckets only. We never reuse `DELETED` tombstones as that could
+    /// invalidate both active readers. It could also invalidate `PotentialSlot` values.
     ///
     /// There must be at least 1 empty bucket in the table.
     #[inline]
@@ -731,7 +731,11 @@ impl<T> TableRef<T> {
         }
     }
 
-    /// Searches for an element in the table.
+    /// Searches for an element in the table, returning the bucket an insert of it would use if
+    /// it is missing.
+    ///
+    /// That bucket is the first `EMPTY` one of the probe sequence, which is the bucket
+    /// [TableInfoRef::find_insert_slot] picks as well.
     #[inline]
     unsafe fn find_potential(
         &self,
