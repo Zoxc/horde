@@ -1336,7 +1336,8 @@ impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
         self.expand_by(1)
     }
 
-    /// Out-of-line slow path for `reserve` and `try_reserve`.
+    /// Makes room for `additional` more elements by replacing the current table with a freshly
+    /// allocated one holding clones of its elements, and returns the new table.
     fn expand_by(&mut self, additional: usize) -> TableRef<(K, V)> {
         let table = self.table.current();
 
