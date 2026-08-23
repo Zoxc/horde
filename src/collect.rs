@@ -293,7 +293,7 @@ pub fn release() {
 ///
 /// This may collect garbage using the callbacks registered with [defer] and [defer_unchecked].
 ///
-/// This may panic if called while a thread is pinned or if called from a deferred callback.
+/// This may panic if called while the current thread is pinned or during a deferred callback.
 pub fn collect() {
     data(|data| {
         if cfg!(debug_assertions) {
