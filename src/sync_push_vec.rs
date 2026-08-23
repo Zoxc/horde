@@ -322,7 +322,7 @@ impl<T> TableRef<T> {
         unsafe { (self.data.as_ptr() as *mut T).sub(self.info().capacity) }
     }
 
-    /// Returns a pointer to an element in the table.
+    /// Returns a pointer to the slice of the elements in the table.
     #[inline]
     unsafe fn slice(&self) -> *const [T] {
         unsafe {
