@@ -11,9 +11,9 @@
 //!
 //! Participating threads are also released when they exit, by a thread local destructor.
 //! Threads which exit skipping those destructors must call [release] first, otherwise
-//! reclamation for the whole process will stall. Releasing do not run any callbacks
-//! so it could be useful to call [collect] after joining that last thread that use the collector,
-//! or have a [release] and [collect] pair prior to its exit, to ensure all callbacks run.
+//! reclamation for the whole process will stall. Releasing does not run any callbacks, so to
+//! ensure all callbacks run it could be useful to call [collect] after joining the last thread
+//! that uses the collector, or to have that thread call [release] and [collect] before it exits.
 
 use crate::{
     scopeguard::guard,
