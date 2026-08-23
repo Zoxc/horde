@@ -42,11 +42,10 @@ where
 
 /// A reference to a hash table bucket containing a `T`.
 ///
-/// This is a pointer to the element itself.
+/// The pointer it holds is one element past the element itself, as buckets
+/// are laid out backwards from the end of the element array.
+/// [Bucket::as_ptr] converts it back to a plain pointer to the element.
 struct Bucket<T> {
-    // Actually it is pointer to next element than element itself
-    // this is needed to maintain pointer arithmetic invariants
-    // keeping direct pointer to element introduces difficulty.
     // Using `NonNull` for variance and niche layout
     ptr: NonNull<T>,
 }
