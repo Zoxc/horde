@@ -940,6 +940,10 @@ impl<K, V, S> SyncTable<K, V, S> {
     }
 
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `guard` does not guard this table's mutex.
     #[inline]
     pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, K, V, S> {
         let mut lock = self.lock_from_guard_no_prune(guard);
@@ -951,6 +955,10 @@ impl<K, V, S> SyncTable<K, V, S> {
     ///
     /// This does not prune old tables unlike [SyncTable::lock_from_guard].
     /// Instead [Write::prune] must be manually called to free old tables.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `guard` does not guard this table's mutex.
     #[inline]
     pub fn lock_from_guard_no_prune<'a>(
         &'a self,

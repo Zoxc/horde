@@ -478,6 +478,10 @@ impl<T> SyncPushVec<T> {
     }
 
     /// Creates a [LockedWrite] handle from a guard protecting the underlying mutex that protects writes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `guard` does not guard this vector's mutex.
     #[inline]
     pub fn lock_from_guard<'a>(&'a self, guard: MutexGuard<'a, ()>) -> LockedWrite<'a, T> {
         // Verify that we are target of the guard
