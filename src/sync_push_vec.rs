@@ -350,7 +350,7 @@ impl<T> TableRef<T> {
 }
 
 impl<T: Clone> TableRef<T> {
-    /// Allocates a new table of a different size and moves the contents of the
+    /// Allocates a table with a capacity of `new_capacity` and clones the contents of the
     /// current table into it.
     unsafe fn clone(&self, new_capacity: usize) -> TableRef<T> {
         unsafe {

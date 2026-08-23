@@ -751,8 +751,8 @@ impl<T> TableRef<T> {
 }
 
 impl<T: Clone> TableRef<T> {
-    /// Allocates a new table of a different size and moves the contents of the
-    /// current table into it.
+    /// Allocates a table with `buckets` buckets and clones the contents of the current table
+    /// into it, hashing every element with `hasher`.
     unsafe fn clone_table<S>(
         &self,
         hash_builder: &S,
