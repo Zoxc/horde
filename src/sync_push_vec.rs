@@ -509,13 +509,13 @@ impl<T> SyncPushVec<T> {
 }
 
 impl<'a, T> Read<'a, T> {
-    /// Returns the number of elements the map can hold without reallocating.
+    /// Returns the number of elements the vector can hold without reallocating.
     #[inline]
     pub fn capacity(self) -> usize {
         unsafe { self.table.current().info().capacity }
     }
 
-    /// Returns the number of elements in the table.
+    /// Returns the number of elements in the vector.
     #[inline]
     pub fn len(self) -> usize {
         unsafe { self.table.current().info().items.load(Ordering::Acquire) }
@@ -545,7 +545,7 @@ impl<'a, T> Write<'a, T> {
 }
 
 impl<'a, T: Clone> Write<'a, T> {
-    /// Inserts a new element into the end of the table, and returns a reference to it along
+    /// Inserts a new element at the end of the vector, and returns a reference to it along
     /// with its index.
     #[inline]
     pub fn push(&mut self, value: T) -> (&T, usize) {
@@ -752,11 +752,11 @@ impl<T: Clone> FromIterator<T> for SyncPushVec<T> {
     #[inline]
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let iter = iter.into_iter();
-        let mut map = Self::with_capacity(iter.size_hint().0);
-        let mut write = map.write();
+        let mut vec = Self::with_capacity(iter.size_hint().0);
+        let mut write = vec.write();
         iter.for_each(|v| {
             write.push(v);
         });
-        map
+        vec
     }
 }
