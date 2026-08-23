@@ -45,7 +45,7 @@ static EVENTS: AtomicUsize = AtomicUsize::new(0);
 /// `'a`.
 #[derive(Clone, Copy)]
 pub struct Pin<'a> {
-    // Pin` is `Send` and `Sync` as having a single thread pinning is sufficient.
+    // `Pin` is `Send` and `Sync` as having a single thread pinning is sufficient.
     _private: PhantomData<&'a ()>,
 }
 
