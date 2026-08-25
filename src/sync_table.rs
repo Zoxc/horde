@@ -1307,7 +1307,7 @@ impl<'a, K: Hash + Eq + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
 impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Inserts a new element into the table, and returns a reference to it.
     ///
-    /// This does not check if the given element already exists in the table.
+    /// An element with the same `key` must not be in the table already.
     ///
     /// `hash` must be a hash of `key` from the table's hasher if present.
     #[inline]
@@ -1601,7 +1601,7 @@ impl<'a> PotentialSlot<'a> {
 
     /// Inserts a new element into the table, and returns a reference to it.
     ///
-    /// This does not check if the given element already exists in the table.
+    /// An element with the same `key` must not be in the table already.
     ///
     /// `hash` must be a hash of `key` from the table's hasher if present.
     ///
@@ -1633,7 +1633,7 @@ impl<'a> PotentialSlot<'a> {
 
     /// Inserts a new element into the table, and returns a reference to it.
     ///
-    /// This does not check if the given element already exists in the table.
+    /// An element with the same `key` must not be in the table already.
     ///
     /// `hash` must be a hash of `key` from the table's hasher if present.
     ///
