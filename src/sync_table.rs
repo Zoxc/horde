@@ -206,9 +206,16 @@ impl TableInfo {
     /// The number of items in the table. It can race if the writer lock is not held.
     #[inline]
     fn items(&self) -> usize {
+        // We load `tombstones` first here. Every tombstone we see here is one slot
+        // which cannot appear in the following `growth_left` load as each tombstone
+        // uses up one of the `growth_left` slots before the change to `tombstones` happens.
+        // This means tombstones + growth_left may never exceed capacity and
+        // the computation will never underflow.
+        let tombstones = self.tombstones.load(Ordering::Acquire);
+
         bucket_mask_to_capacity(self.bucket_mask)
-            .saturating_sub(self.growth_left.load(Ordering::Acquire))
-            .saturating_sub(self.tombstones.load(Ordering::Acquire))
+            - tombstones
+            - self.growth_left.load(Ordering::Acquire)
     }
 
     /// Returns an iterator-like object for a probe sequence on the table.
@@ -1113,8 +1120,9 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
     pub fn capacity(self) -> usize {
         let table = self.table.current();
         unsafe {
+            // Tombstones may never exceed the capacity, so this won't underflow.
             bucket_mask_to_capacity(table.info().bucket_mask)
-                .saturating_sub(table.info().tombstones.load(Ordering::Acquire))
+                - table.info().tombstones.load(Ordering::Acquire)
         }
     }
 
@@ -1255,6 +1263,10 @@ impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
             table.find(hash, eq(key)).map(|(index, bucket)| {
                 debug_assert!(is_full(table.info.ctrl_acquire(index)));
                 table.info.set_ctrl_release(index, DELETED);
+
+                // Increase the tombstone count after `DELETED` is set.
+                // This ensures a reader which sees `n` tombstones
+                // also will see at least `n` `DELETED` slots.
                 table.info().tombstones.store(
                     table.info().tombstones.load(Ordering::Relaxed) + 1,
                     Ordering::Release,
