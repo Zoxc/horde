@@ -777,6 +777,82 @@ impl<T: Clone> TableRef<T> {
             )
         }
     }
+
+    /// Allocates a table and clones the contents of the table into it, hashing every
+    /// element with `hasher` and dropping elements which `eq` says are already there.
+    ///
+    /// The new table has room for at least twice the elements of the current one.
+    ///
+    /// This function assumes there may be concurrent writes.
+    ///
+    /// # Safety
+    /// The table must stay alive for the call.
+    unsafe fn clone_table_dedup<S>(
+        &self,
+        hash_builder: &S,
+        hasher: impl Fn(&S, &T) -> u64,
+        eq: impl Fn(&T, &T) -> bool,
+    ) -> TableRef<T> {
+        unsafe {
+            let full_capacity = bucket_mask_to_capacity(self.info().bucket_mask);
+
+            // The tombstones we load here are guaranteed to be excluded from the iterator below
+            // and from the `growth_left` load.
+            let tombstones = self.info().tombstones.load(Ordering::Acquire);
+            let remaining_capacity = full_capacity - tombstones;
+
+            // There's no room in the table for any elements, use the static empty table.
+            if remaining_capacity == 0 {
+                return TableRef::empty();
+            }
+
+            // Estimate the number of items left. The value of `growth_left` can
+            // race, but must be less than or equal `remaining_capacity`.
+            let growth_left = self.info().growth_left.load(Ordering::Acquire);
+            let items = remaining_capacity - growth_left;
+
+            // Use at least `remaining_capacity` to leave room for racing inserts to fully
+            // fill the remaining table, which we could pick up in the iterator below.
+            let capacity = cmp::max(items * 2, remaining_capacity);
+
+            // Fallback to `remaining_capacity` on overflow.
+            let buckets = capacity_to_buckets(capacity)
+                .or_else(|| capacity_to_buckets(remaining_capacity))
+                .expect("capacity overflow");
+
+            let mut new_table = TableRef::allocate(buckets);
+
+            let mut guard = guard(Some(new_table), |new_table| {
+                new_table.map(|new_table| new_table.free());
+            });
+
+            let mut growth_left = *new_table.info_mut().growth_left.get_mut();
+
+            // Copy all elements to the new table.
+            for bucket in self.iter() {
+                // This may panic.
+                let item = bucket.as_ref().clone();
+
+                // This may panic.
+                let hash = hasher(hash_builder, &item);
+
+                // This may panic.
+                if let Err(slot) = new_table.find_potential(hash, |other| eq(other, &item)) {
+                    new_table.info.set_ctrl_h2(slot.index, hash);
+
+                    new_table.bucket(slot.index).write(item);
+
+                    growth_left -= 1;
+                }
+            }
+
+            *new_table.info_mut().growth_left.get_mut() = growth_left;
+
+            *guard = None;
+
+            new_table
+        }
+    }
 }
 
 #[cfg(feature = "nightly")]
@@ -1178,7 +1254,7 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
     }
 }
 
-impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V, S> {
+impl<K: Hash + Eq + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V, S> {
     /// Cloning can give an inconsistent view of the table if there are concurrent writers.
     /// Hold [SyncTable::lock] across the clone if a consistent view is needed.
     fn clone(&self) -> SyncTable<K, V, S> {
@@ -1186,20 +1262,18 @@ impl<K: Hash + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V
             let table = self.current();
 
             unsafe {
-                let buckets = table.info().buckets();
                 let hash_builder = self.hash_builder.clone();
 
                 SyncTable {
                     current: AtomicPtr::new(
-                        if table.info().bucket_mask > 0 {
-                            // Hash with the new hash builder as it
-                            // may not be equivalent to the old
-                            table.clone_table(&hash_builder, buckets, hasher)
-                        } else {
-                            TableRef::empty()
-                        }
-                        .info
-                        .as_ptr(),
+                        // Hash with the new hash builder as it
+                        // may not be equivalent to the old.
+                        // Use `clone_table_dedup` to deal with races which can insert multiple
+                        // of the same key via `remove` followed by a re-insertion.
+                        table
+                            .clone_table_dedup(&hash_builder, hasher, |a, b| a.0 == b.0)
+                            .info
+                            .as_ptr(),
                     ),
                     hash_builder,
                     retired_head: Cell::new(TableInfoRef::empty()),

@@ -6,6 +6,7 @@ use crate::collect::enter_test;
 use crate::collect::pin;
 use crate::collect::release;
 use crate::util::leak_as_miri_root;
+use std::cell::Cell;
 use std::collections::hash_map::RandomState;
 use std::mem;
 use std::{
@@ -96,8 +97,10 @@ fn clone_rehashes_a_non_empty_table() {
 
     // Its own allocation, neither the original's table nor the static empty one.
     assert_ne!(m.current().info.as_ptr(), cloned.current().info.as_ptr());
-    assert_eq!(cloned.lock().read().capacity(), m.lock().read().capacity());
     assert_eq!(cloned.lock().read().len(), KEYS as usize);
+
+    // Room for twice the elements.
+    assert!(cloned.lock().read().capacity() >= 2 * KEYS as usize);
 
     // The clone hashes with a fresh `RandomState`, so finding these again means every element
     // was placed by the clone's own hash rather than copied into the original's bucket.
@@ -146,6 +149,165 @@ fn clone_rehashes_with_the_clones_own_hasher() {
     // The original still finds its elements under its own hashes.
     for i in 0..KEYS {
         assert_eq!(m.lock().read().get(&i, None).map(|(_, v)| *v), Some(i));
+    }
+}
+
+/// Twice the elements is less than the capacity of a table which has spent most of it on
+/// tombstones, so the clone is sized for what is left of the source rather than for the
+/// buckets it once filled.
+#[test]
+fn clone_compacts_a_table_of_mostly_tombstones() {
+    let _test = enter_test();
+
+    const KEYS: u64 = 100;
+    const LIVE: u64 = 5;
+
+    let m: SyncTable<u64, String> = SyncTable::new();
+    for i in 0..KEYS {
+        assert!(m.lock().write().insert(i, format!("v{i}"), None));
+    }
+
+    let before_removals = m.lock().read().capacity();
+
+    for i in 0..(KEYS - LIVE) {
+        assert!(m.lock().write().remove(&i, None).is_some());
+    }
+
+    let source = m.lock().read().capacity();
+    assert!(source < before_removals, "the removals left no tombstones");
+
+    let cloned = m.clone();
+    let capacity = cloned.lock().read().capacity();
+
+    // Smaller than the source's own table, as the tombstones are not copied over.
+    assert!(capacity < before_removals);
+
+    // The floor: the elements the iteration can still yield all have to fit.
+    assert!(capacity >= source);
+
+    // With the live elements in it and none of the removed ones.
+    assert_eq!(cloned.lock().read().len(), LIVE as usize);
+    for i in 0..KEYS {
+        let found = cloned.lock().read().get(&i, None).map(|(_, v)| v.clone());
+        assert_eq!(found, (i >= KEYS - LIVE).then(|| format!("v{i}")));
+    }
+}
+
+/// A table which has spent all of its capacity on tombstones can be told apart from one which
+/// merely reads as empty: `growth_left` is spent too, so a racing insert has to expand it and
+/// leave this one alone, and the iteration is bound to come up empty.
+#[test]
+fn clone_of_a_table_spent_on_tombstones_reuses_the_static_table() {
+    let _test = enter_test();
+
+    let m: SyncTable<u64, u64> = SyncTable::new();
+
+    // Fill it exactly to capacity, so every bucket a tombstone can claim is claimed.
+    let mut keys = 0;
+    loop {
+        let write = m.lock();
+        let read = write.read();
+        let full = read.len() > 0 && read.len() == read.capacity();
+        drop(write);
+
+        if full {
+            break;
+        }
+
+        assert!(m.lock().write().insert(keys, keys, None));
+        keys += 1;
+    }
+
+    for i in 0..keys {
+        assert!(m.lock().write().remove(&i, None).is_some());
+    }
+
+    assert_eq!(m.lock().read().capacity(), 0);
+
+    let cloned = m.clone();
+
+    // The static table, which is what a table that never held anything clones into.
+    let fresh: SyncTable<u64, u64> = SyncTable::new();
+    assert_eq!(
+        cloned.current().info.as_ptr(),
+        fresh.current().info.as_ptr()
+    );
+    assert_eq!(cloned.lock().read().len(), 0);
+
+    // And it grows from there like any other table.
+    assert!(cloned.lock().write().insert(1, 2, None));
+    assert_eq!(cloned.lock().read().get(&1, None).map(|(_, v)| *v), Some(2));
+    assert_eq!(m.lock().read().get(&1, None), None);
+}
+
+/// A writer can move an element to a later bucket between the group loads of the iteration
+/// `Clone` drives, making that iteration yield the element twice. The clone must keep one
+/// entry for it rather than two.
+#[test]
+fn clone_skips_a_duplicate_yielded_by_a_racing_writer() {
+    let _test = enter_test();
+
+    // Enough keys to fill the first group, all probing from bucket 0, so a reinsertion
+    // lands in the next group which the iteration has yet to load.
+    let keys: Vec<u64> = (1..=super::Group::WIDTH as u64).map(|i| i * 64).collect();
+    let magic = *keys.last().unwrap();
+
+    type Table = SyncTable<u64, Val, IdentityHashBuilder>;
+
+    // The table the writer runs on, and the key it moves. Taken by the first clone of a
+    // value, which happens once the first group is loaded but before the next one is.
+    thread_local! {
+        static WRITE_ON: Cell<Option<(*const Table, u64)>> = const { Cell::new(None) };
+    }
+
+    struct Val(u64);
+
+    impl Clone for Val {
+        fn clone(&self) -> Val {
+            if let Some((table, magic)) = WRITE_ON.take() {
+                // The `remove` only writes a tombstone, so the element stays in the group
+                // already loaded while the `insert_new` adds a second copy of the key
+                // behind it. No other write handle exists, `clone` takes none.
+                unsafe {
+                    let mut write = (*table).unsafe_write_no_prune();
+                    write.remove(&magic, None);
+                    write.insert_new(magic, Val(!self.0), None);
+                }
+            }
+            Val(self.0)
+        }
+    }
+
+    let table: Table = SyncTable::new_with(IdentityHashBuilder, 40);
+    for (i, key) in keys.iter().enumerate() {
+        table.lock().write().insert_new(*key, Val(i as u64), None);
+    }
+
+    WRITE_ON.set(Some((&table, magic)));
+    let cloned = table.clone();
+    assert!(WRITE_ON.take().is_none(), "the writer never ran");
+
+    {
+        let write = cloned.lock();
+        let read = write.read();
+        assert_eq!(read.iter().filter(|(k, _)| **k == magic).count(), 1);
+        assert_eq!(read.iter().count(), keys.len());
+        assert_eq!(read.len(), keys.len());
+        for key in &keys {
+            assert!(read.get(key, None).is_some());
+        }
+    }
+
+    // A single removal leaves no copy of the key behind.
+    cloned.lock().write().remove(&magic, None);
+    assert!(cloned.lock().read().get(&magic, None).is_none());
+
+    // The source kept every key too, the moved one in its new bucket.
+    let write = table.lock();
+    let read = write.read();
+    assert_eq!(read.iter().count(), keys.len());
+    for key in &keys {
+        assert!(read.get(key, None).is_some());
     }
 }
 
