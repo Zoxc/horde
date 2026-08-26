@@ -1727,8 +1727,9 @@ impl<'a> PotentialSlot<'a> {
     /// # Safety
     /// - `table` must match the value given when `self` was created using a
     ///   `get_potential` or `refresh` call.
-    /// - There must not have been any insertions or `replace` calls to the table since `self`
-    ///   was derived.
+    /// - The current table must not have been replaced since `self` was derived, which
+    ///   insertions, `reserve_one` and `replace` calls can all do.
+    /// - The slot `self` names must still be empty. Any insertions could potentially take it.
     /// - There must be capacity left in the current table.
     #[inline]
     unsafe fn insert_new_unchecked<'b, K: Hash, V, S: BuildHasher>(
