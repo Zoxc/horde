@@ -763,6 +763,12 @@ impl<T> TableRef<T> {
 impl<T: Clone> TableRef<T> {
     /// Allocates a table with `buckets` buckets and clones the contents of the current table
     /// into it, hashing every element with `hasher`.
+    ///
+    /// # Safety
+    /// - The table must stay alive for the call.
+    /// - There must be no concurrent writers.
+    /// - `buckets` must be valid for `allocate` and give sufficient capacity to hold all the elements of
+    ///   the table.
     unsafe fn clone_table<S>(
         &self,
         hash_builder: &S,
