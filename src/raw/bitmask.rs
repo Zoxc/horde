@@ -17,7 +17,7 @@ pub struct BitMask(pub BitMaskWord);
 
 #[allow(clippy::use_self)]
 impl BitMask {
-    /// Returns a new `BitMask` with all bits inverted.
+    /// Returns a new `BitMask` with the actually-used bits inverted.
     #[inline]
     #[must_use]
     pub fn invert(self) -> Self {
