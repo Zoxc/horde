@@ -297,7 +297,7 @@ fn pin_cold() {
             }
 
             if COLLECTOR.lock().register(data.thread_id()) {
-                // The collector has pending callbacks.
+                // The collector has callbacks.
                 // Set `seen_events` to ensure the next `collect` call triggers.
                 data.seen_events
                     .set(EVENTS.load(Ordering::Relaxed).wrapping_sub(1));
@@ -499,7 +499,7 @@ impl Collector {
 
     /// Registers the current thread as a busy participant in the current epoch.
     ///
-    /// Returns `true` if the collector holds callbacks.
+    /// Returns `true` if the collector has callbacks.
     #[must_use]
     fn register(&mut self, thread_id: ThreadId) -> bool {
         self.busy_count += 1;
