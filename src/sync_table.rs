@@ -369,7 +369,7 @@ impl TableInfoRef {
     /// Searches for an empty bucket which is suitable for inserting a new element.
     ///
     /// This looks for `EMPTY` buckets only. We never reuse `DELETED` tombstones as that could
-    /// invalidate both active readers. It could also invalidate `PotentialSlot` values.
+    /// invalidate active readers. It could also invalidate `PotentialSlot` values.
     ///
     /// There must be at least 1 empty bucket in the table.
     #[inline]
