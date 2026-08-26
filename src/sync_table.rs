@@ -1263,6 +1263,10 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 impl<K: Hash + Eq + Clone, V: Clone, S: Clone + BuildHasher> Clone for SyncTable<K, V, S> {
     /// Cloning can give an inconsistent view of the table if there are concurrent writers.
     /// Hold [SyncTable::lock] across the clone if a consistent view is needed.
+    ///
+    /// This uses a pinned region with [crate::collect::pin].
+    /// The traits used here must only call functions compatible with pinning.
+    /// The thread will participate in memory reclamation due to the [crate::collect::pin] call.
     fn clone(&self) -> SyncTable<K, V, S> {
         pin(|_pin| {
             let table = self.current();
