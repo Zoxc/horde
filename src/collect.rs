@@ -169,11 +169,36 @@ impl Data {
     }
 }
 
+/// Returns `true` once the loader has started shutting the process down on Windows
+#[cfg(windows)]
+fn process_is_exiting() -> bool {
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        /// Returns a non-zero value while the loader is shutting the process down.
+        /// This does not include unloading DLLs.
+        /// See <https://learn.microsoft.com/en-us/windows/win32/devnotes/rtldllshutdowninprogress>.
+        fn RtlDllShutdownInProgress() -> u8;
+    }
+    unsafe { RtlDllShutdownInProgress() != 0 }
+}
+
+#[cfg(not(windows))]
+fn process_is_exiting() -> bool {
+    false
+}
+
 /// Releases the current thread from the collector when the thread exits.
 struct ExitGuard;
 
 impl Drop for ExitGuard {
     fn drop(&mut self) {
+        // On Windows this destructor also runs during process exit with all other threads killed.
+        // We could deadlock if we tried to get the `COLLECTOR` lock,
+        // so instead we just skip calling `release.
+        if process_is_exiting() {
+            return;
+        }
+
         release();
     }
 }
