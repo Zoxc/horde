@@ -1838,9 +1838,6 @@ fn capacity_to_buckets(cap: usize) -> Option<usize> {
         if cap < 4 { 4 } else { 8 }
     } else {
         // Otherwise require 1/8 buckets to be empty (87.5% load)
-        //
-        // Be careful when modifying this, calculate_layout relies on the
-        // overflow check here.
         let adjusted_cap = cap.checked_mul(8)? / 7;
 
         // Any overflows will have been caught by the checked_mul. Also, any
