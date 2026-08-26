@@ -334,7 +334,11 @@ impl TableInfoRef {
         unsafe { self.set_ctrl(index, h2(hash)) }
     }
 
-    /// Marks the bucket at `index` as full with the tag of `hash`.
+    /// Marks the bucket at `index` as full with the tag of `hash` and accounts for the
+    /// slot the element consumed by decrementing `growth_left`.
+    ///
+    /// # Safety
+    /// There must be capacity left in the table, otherwise `growth_left` underflows.
     #[inline]
     unsafe fn record_item_insert_at(self, index: usize, hash: u64) {
         unsafe {
