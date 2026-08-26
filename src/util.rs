@@ -12,7 +12,9 @@ pub(crate) const NO_ASM: bool = cfg_select! {
             sanitize = "thread"
         ))
     }
-    _ => { cfg!(miri) }
+    _ => {
+        cfg!(miri)
+    }
 };
 
 #[inline]

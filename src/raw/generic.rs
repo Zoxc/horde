@@ -1,5 +1,5 @@
-use super::{DELETED, EMPTY};
 use super::bitmask::BitMask;
+use super::{DELETED, EMPTY};
 use core::mem;
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -12,8 +12,8 @@ type GroupWord = cfg_select! {
         target_arch = "aarch64",
         target_arch = "x86_64",
         target_arch = "wasm32",
-    ) => { u64 }
-    _ => { u32 }
+    ) => u64,
+    _ => u32,
 };
 
 pub type BitMaskWord = GroupWord;
