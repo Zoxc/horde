@@ -1650,7 +1650,8 @@ impl<'a> PotentialSlot<'a> {
         cold_path(|| table.get(key, hash))
     }
 
-    /// Returns a new up-to-date potential slot.
+    /// Returns a reference to the element if it's in the table now, or an up-to-date
+    /// potential slot for it in `Err` if it's still missing.
     /// This can be useful if there could have been insertions since the slot was derived
     /// and you want to use `insert_new`.
     ///
