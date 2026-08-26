@@ -1,8 +1,8 @@
 //! An API for quiescent state based reclamation.
 //!
 //! Threads that read shared lock-free data call [pin] to mark the duration of the critical
-//! section. Destruction of removed data is postponed with [defer_unchecked] and later driven by
-//! [collect], which advances the global quiescent-state cycle.
+//! section. Destruction of removed data is postponed with [defer] or [defer_unchecked],
+//! and later driven by [collect], which advances the global quiescent-state cycle.
 //!
 //! Threads which call [pin] will participate in global memory reclamation and should
 //! regularly call [collect] to allow memory reclamation to progress.
