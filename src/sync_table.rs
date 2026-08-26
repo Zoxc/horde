@@ -1313,7 +1313,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
     }
 }
 
-impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
+impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
     /// Removes an element from the table, and returns a reference to it if was present.
     ///
     /// The element will only be dropped after the internal table currently in use is replaced
@@ -1326,8 +1326,8 @@ impl<'a, K, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
         K: Borrow<Q>,
         Q: ?Sized + Eq + Hash,
     {
-        // V: Clone bound is not currently needed,
-        // but would allow for a downsizing of the table
+        // The `K: Hash + Clone` and `V: Clone` bounds are not currently needed,
+        // but would allow for downsizing of the table.
 
         let hash = self.table.unwrap_hash(key, hash);
 
