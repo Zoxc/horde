@@ -1215,6 +1215,9 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 
     /// An iterator visiting all key-value pairs in arbitrary order.
     /// The iterator element type is `(&'a K, &'a V)`.
+    ///
+    /// The iteration can give an inconsistent view of the table if there are concurrent
+    /// writers. Hold [SyncTable::lock] across the iteration if a consistent view is needed.
     #[inline]
     pub fn iter(self) -> Iter<'a, K, V> {
         let table = self.table.current();
