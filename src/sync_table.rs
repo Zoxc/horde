@@ -1171,6 +1171,8 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
     }
 
     /// Gets a reference to an element in the table, using a closure to find the match.
+    ///
+    /// `hash` must be a hash of the element from the table's hasher.
     #[inline]
     pub fn get_from_hash(
         self,
@@ -1188,6 +1190,8 @@ impl<'a, K, V, S: BuildHasher> Read<'a, K, V, S> {
 
 impl<'a, K, V, S> Read<'a, K, V, S> {
     /// Gets a reference to an element in the table with a custom equality function.
+    ///
+    /// `hash` must be a hash of the element from the table's hasher.
     #[inline]
     pub fn get_with_eq(
         self,
