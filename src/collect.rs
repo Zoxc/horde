@@ -189,14 +189,15 @@ fn process_is_exiting() -> bool {
     false
 }
 
-/// Releases the current thread from the collector when the thread exits.
+/// Releases the current thread from the collector when the thread exits, expect when the process
+/// is already exiting and we're on a Windows platform.
 struct ExitGuard;
 
 impl Drop for ExitGuard {
     fn drop(&mut self) {
         // On Windows this destructor also runs during process exit with all other threads killed.
         // We could deadlock if we tried to get the `COLLECTOR` lock,
-        // so instead we just skip calling `release.
+        // so instead we just skip calling `release`.
         if process_is_exiting() {
             return;
         }
