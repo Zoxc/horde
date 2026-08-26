@@ -653,12 +653,14 @@ impl<T> TableRef<T> {
         unsafe { self.info.info_mut() }
     }
 
+    /// Returns a pointer to the end of the element array, which the elements
+    /// are laid out backwards from.
     #[inline]
     unsafe fn bucket_past_last(&self) -> *mut T {
         self.info.as_ptr() as *mut T
     }
 
-    /// Returns a pointer to an element in the table.
+    /// Returns a [Bucket] pointing to the element at `index`.
     #[inline]
     unsafe fn bucket(&self, index: usize) -> Bucket<T> {
         unsafe {
