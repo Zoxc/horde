@@ -59,8 +59,8 @@ impl IntoIterator for BitMask {
     }
 }
 
-/// Iterator over the contents of a `BitMask`, returning the indicies of set
-/// bits.
+/// Iterator over the contents of a `BitMask`, returning the index of each matched
+/// byte in the group as [BitMask::lowest_set_bit] does.
 pub struct BitMaskIter(BitMask);
 
 impl Iterator for BitMaskIter {
