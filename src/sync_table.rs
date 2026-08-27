@@ -683,6 +683,10 @@ impl<T> TableRef<T> {
             let data = Bucket {
                 ptr: NonNull::new_unchecked(self.bucket_past_last()),
             };
+
+            // Allocated tables are power-of-two sized with at least `Group::WIDTH` buckets,
+            // so `len` a multiple of `Group::WIDTH`.
+            // For the static empty table with 1 bucket, we have `EMPTY` control bytes as padding.
             RawIterRange::new(self.info.ctrl(0), data, self.info().buckets())
         }
     }
@@ -1934,6 +1938,7 @@ impl<T> RawIterRange<T> {
     /// Returns a `RawIterRange` covering a subset of a table.
     ///
     /// The control byte address must be aligned to the group size.
+    /// The length gets rounded up to a multiple of [Group::WIDTH].
     #[inline]
     unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
         unsafe {
@@ -1941,7 +1946,7 @@ impl<T> RawIterRange<T> {
             debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
             let end = ctrl.add(len);
 
-            // Load the first group and advance ctrl to point to the next group
+            // Load the first group and advance ctrl to point to the next group.
             let current_group = Group::load_aligned(ctrl).match_full();
             let next_ctrl = ctrl.add(Group::WIDTH);
 
@@ -1988,11 +1993,6 @@ impl<T> Iterator for RawIterRange<T> {
                     return None;
                 }
 
-                // We might read past self.end up to the next group boundary,
-                // but this is fine because it only occurs on tables smaller
-                // than the group size where the trailing control bytes are all
-                // EMPTY. On larger tables self.end is guaranteed to be aligned
-                // to the group size (since tables are power-of-two sized).
                 self.current_group = Group::load_aligned(self.next_ctrl).match_full();
                 self.data = self.data.next_n(Group::WIDTH);
                 self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
