@@ -151,7 +151,7 @@ enum State {
 struct Data {
     /// Current collector state for the thread.
     state: Cell<State>,
-    /// Last observed value of [EVENTS].
+    /// Last observed value of [EVENTS], or a value set to force the next [collect] call to do work.
     seen_events: Cell<usize>,
     /// The thread's id, lazily initialized by [Data::thread_id].
     thread_id: Cell<Option<ThreadId>>,
