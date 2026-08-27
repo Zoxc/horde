@@ -596,7 +596,8 @@ impl Collector {
         if self.threads.is_empty() {
             self.pending.extend(mem::take(&mut self.current_deferred));
             if !self.pending.is_empty() {
-                // Signal future threads to check in
+                // Signal live unregistered threads so
+                // `collect` can pick up the pending callbacks.
                 EVENTS.fetch_add(1, Ordering::Release);
             }
             return;
