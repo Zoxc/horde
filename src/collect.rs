@@ -483,7 +483,7 @@ struct Collector {
     threads: HashMap<ThreadId, ThreadState>,
     /// Callbacks deferred during the current epoch.
     current_deferred: Callbacks,
-    /// Callbacks that became eligible once the current epoch completes.
+    /// Callbacks that become eligible once the current epoch completes.
     previous_deferred: Callbacks,
 }
 
