@@ -1212,7 +1212,7 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 
     /// Returns the number of elements the table can hold without reallocating.
     ///
-    /// This value may be inaccurate if there's concurrent writers.
+    /// This value may be inaccurate if there are concurrent writers.
     #[inline]
     pub fn capacity(self) -> usize {
         let table = self.table.current();
@@ -1225,7 +1225,7 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
 
     /// Returns the number of elements in the table.
     ///
-    /// This value may be inaccurate if there's concurrent writers.
+    /// This value may be inaccurate if there are concurrent writers.
     #[inline]
     pub fn len(self) -> usize {
         unsafe { self.table.current().info().items() }
@@ -1342,7 +1342,7 @@ impl<'a, K, V, S> Write<'a, K, V, S> {
 }
 
 impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
-    /// Removes an element from the table, and returns a reference to it if was present.
+    /// Removes an element from the table, and returns a reference to it if it was present.
     ///
     /// The element will only be dropped after the internal table currently in use is replaced
     /// for example by `replace` or due to expansion.
@@ -1380,7 +1380,7 @@ impl<'a, K: Hash + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
 }
 
 impl<'a, K: Hash + Eq + Clone, V: Clone, S: BuildHasher> Write<'a, K, V, S> {
-    /// Inserts a element into the table.
+    /// Inserts an element into the table.
     /// Returns `false` if it already exists and doesn't update the value.
     ///
     /// `hash` must be a hash of `key` from the table's hasher if present.
