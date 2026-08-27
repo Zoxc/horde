@@ -524,7 +524,12 @@ impl Collector {
     }
 
     fn collect_unregistered(&mut self) -> Callbacks {
-        debug_assert!(!self.threads.contains_key(&data(|data| data.thread_id())));
+        // A thread without a `DATA` thread local or an assigned thread is is never registered.
+        if cfg!(debug_assertions)
+            && let Ok(Some(thread_id)) = DATA.try_with(|data| data.thread_id.get())
+        {
+            assert!(!self.threads.contains_key(&thread_id))
+        }
 
         let mut callbacks = mem::take(&mut self.pending);
 
