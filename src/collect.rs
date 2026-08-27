@@ -11,9 +11,12 @@
 //!
 //! Participating threads are also released when they exit, by a thread local destructor.
 //! Threads which exit skipping those destructors must call [release] first, otherwise
-//! reclamation for the whole process will stall. Releasing does not run any callbacks, so to
-//! run the outstanding ones it could be useful to call [collect] after joining the last thread
-//! that uses the collector, or to have that thread call [release] and [collect] before it exits.
+//! reclamation for the whole process will stall. Exiting the process or a thread
+//! from inside a pinned region or a deferred callback can abort the process.
+//!
+//! Releasing does not run any callbacks, so to run the outstanding ones it could be useful to
+//! call [collect] after joining the last thread that uses the collector, or to have that thread
+//! call [release] and [collect] before it exits.
 //! A callback may itself defer callbacks, which only become eligible in a later cycle, so a
 //! single [collect] call may not run them all.
 
@@ -189,20 +192,33 @@ fn process_is_exiting() -> bool {
     false
 }
 
-/// Releases the current thread from the collector when the thread exits, expect when the process
-/// is already exiting and we're on a Windows platform.
+/// Releases the current thread from the collector when the thread exits, when possible.
 struct ExitGuard;
 
 impl Drop for ExitGuard {
     fn drop(&mut self) {
         // On Windows this destructor also runs during process exit with all other threads killed.
-        // We could deadlock if we tried to get the `COLLECTOR` lock,
-        // so instead we just skip calling `release`.
+        // We could deadlock if we tried to get the `COLLECTOR` lock or the stderr lock,
+        // so instead we just return.
         if process_is_exiting() {
             return;
         }
 
-        release();
+        data(|data| match data.state.get() {
+            State::Registered => {
+                data.state.set(State::Unregistered);
+                COLLECTOR.lock().unregister(data.thread_id());
+            }
+            State::Unregistered => (),
+            State::Pinned => {
+                eprintln!("Cannot exit a thread while pinned");
+                process::abort()
+            }
+            State::Collecting => {
+                eprintln!("Deferred callbacks cannot exit a thread");
+                process::abort()
+            }
+        })
     }
 }
 
