@@ -901,7 +901,7 @@ impl<K, V, S: Default> Default for SyncTable<K, V, S> {
 impl<K, V> SyncTable<K, V, DefaultHashBuilder> {
     /// Creates an empty [SyncTable].
     ///
-    /// The hash map is initially created with a capacity of 0, so it will not allocate until it
+    /// The table is initially created with a capacity of 0, so it will not allocate until it
     /// is first inserted into.
     #[inline]
     pub fn new() -> Self {
@@ -930,10 +930,10 @@ impl<K, V, S> SyncTable<K, V, S> {
     }
 
     /// Creates an empty [SyncTable] with the specified capacity, using `hash_builder`
-    /// to hash the elements or keys.
+    /// to hash the keys.
     ///
-    /// The hash map will be able to hold at least `capacity` elements without
-    /// reallocating. If `capacity` is 0, the hash map will not allocate.
+    /// The table will be able to hold at least `capacity` elements without
+    /// reallocating. If `capacity` is 0, the table will not allocate.
     #[inline]
     pub fn new_with(hash_builder: S, capacity: usize) -> Self {
         Self {
@@ -1210,7 +1210,7 @@ impl<'a, K, V, S> Read<'a, K, V, S> {
         }
     }
 
-    /// Returns the number of elements the map can hold without reallocating.
+    /// Returns the number of elements the table can hold without reallocating.
     ///
     /// This value may be inaccurate if there's concurrent writers.
     #[inline]
