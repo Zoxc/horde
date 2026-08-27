@@ -1,4 +1,5 @@
-//! A contiguous push-only array type with lock-free reads.
+//! A contiguous array type with lock-free reads. It is append-only, apart from
+//! [Write::replace] which swaps out the entire contents.
 
 use crate::{
     collect::{self, Pin},
@@ -69,7 +70,8 @@ impl<'a, T> LockedWrite<'a, T> {
     }
 }
 
-/// A contiguous push-only array type with lock-free reads.
+/// A contiguous array type with lock-free reads. It is append-only, apart from
+/// [Write::replace] which swaps out the entire contents.
 pub struct SyncPushVec<T> {
     current: AtomicPtr<TableInfo>,
 
