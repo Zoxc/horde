@@ -211,11 +211,11 @@ impl Drop for ExitGuard {
             }
             State::Unregistered => (),
             State::Pinned => {
-                eprintln!("Cannot exit a thread while pinned");
+                eprintln!("Cannot exit the process or the current thread while pinned");
                 process::abort()
             }
             State::Collecting => {
-                eprintln!("Deferred callbacks cannot exit a thread");
+                eprintln!("Cannot exit the process or the current thread in a deferred callback");
                 process::abort()
             }
         })
