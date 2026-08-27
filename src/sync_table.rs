@@ -799,7 +799,8 @@ impl<T: Clone> TableRef<T> {
     /// Allocates a table and clones the contents of the table into it, hashing every
     /// element with `hasher` and dropping elements which `eq` says are already there.
     ///
-    /// The new table has room for at least twice the elements of the current one.
+    /// The new table has room for at least twice the elements of the current one,
+    /// unless that overflows.
     ///
     /// This function assumes there may be concurrent writes.
     ///
