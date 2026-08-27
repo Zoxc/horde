@@ -1,4 +1,4 @@
-//! This crate contains [SyncTable] and [SyncPushVec] which offers lock-free reads and uses
+//! This crate contains [SyncTable] and [SyncPushVec] which offer lock-free reads and use
 //! quiescent state based reclamation for which an API is available in the [collect] module.
 
 #![cfg_attr(

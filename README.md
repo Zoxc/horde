@@ -7,7 +7,7 @@ horde
 [![Build Status](https://img.shields.io/github/actions/workflow/status/Zoxc/horde/build.yaml?label=build)](https://github.com/Zoxc/horde/actions/workflows/build.yaml)
 [![Git Documentation](https://img.shields.io/github/actions/workflow/status/Zoxc/horde/docs.yaml?label=git%20docs)](https://zoxc.github.io/horde/horde/)
 
-A crate that contains `SyncTable` and `SyncPushVec`, both which offers lock-free reads. `SyncPushVec` has limited deletion options. They use quiescent state based reclamation for which an API is also available. `SyncTable` is based on the [hashbrown](https://crates.io/crates/hashbrown) crate and has similar lookup performance.
+A crate that contains `SyncTable` and `SyncPushVec`, both of which offer lock-free reads. `SyncPushVec` has limited deletion options. They use quiescent state based reclamation for which an API is also available. `SyncTable` is based on the [hashbrown](https://crates.io/crates/hashbrown) crate and has similar lookup performance.
 
 ## License
 
