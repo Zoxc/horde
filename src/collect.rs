@@ -175,21 +175,21 @@ impl Data {
 }
 
 /// Returns `true` once the loader has started shutting the process down on Windows
-#[cfg(windows)]
 fn process_is_exiting() -> bool {
-    #[link(name = "ntdll")]
-    unsafe extern "system" {
-        /// Returns a non-zero value while the loader is shutting the process down.
-        /// This does not include unloading DLLs.
-        /// See <https://learn.microsoft.com/en-us/windows/win32/devnotes/rtldllshutdowninprogress>.
-        fn RtlDllShutdownInProgress() -> u8;
+    cfg_select! {
+        all(windows, not(miri)) => {
+            #[link(name = "ntdll")]
+            unsafe extern "system" {
+                /// Returns a non-zero value while the loader is shutting the process down.
+                /// This does not include unloading DLLs.
+                /// See <https://learn.microsoft.com/en-us/windows/win32/devnotes/rtldllshutdowninprogress>.
+                fn RtlDllShutdownInProgress() -> u8;
+            }
+            unsafe { RtlDllShutdownInProgress() != 0 }
+        }
+        // Miri does not emulate Windows process shutdown so we don't need to detect process exit there.
+        _ => false,
     }
-    unsafe { RtlDllShutdownInProgress() != 0 }
-}
-
-#[cfg(not(windows))]
-fn process_is_exiting() -> bool {
-    false
 }
 
 /// Releases the current thread from the collector when the thread exits, when possible.
