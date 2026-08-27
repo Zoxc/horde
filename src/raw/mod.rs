@@ -1,6 +1,6 @@
 cfg_select! {
     // Use the SSE2 implementation if possible: it allows us to scan 16 buckets
-    // at once instead of 8. We don't bother with AVX since it would require
+    // at once. We don't bother with AVX since it would require
     // runtime dispatch and wouldn't gain us much anyways: the probability of
     // finding a match drops off drastically after the first few buckets.
     //
