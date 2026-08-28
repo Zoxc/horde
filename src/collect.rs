@@ -262,7 +262,8 @@ fn data<R>(f: impl FnOnce(&Data) -> R) -> R {
 /// Nested calls to [pin] are allowed.
 ///
 /// This will panic if called from a deferred callback. It will also panic if called in
-/// thread local destructors registered before the first [pin] call, which will in turn abort the process.
+/// thread local destructors registered before the first [pin] call on the same thread,
+/// which will in turn abort the process.
 #[inline]
 pub fn pin<R>(f: impl FnOnce(Pin<'_>) -> R) -> R {
     data(|data| {
