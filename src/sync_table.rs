@@ -475,8 +475,9 @@ impl<T> TableRef<T> {
     fn layout(bucket_count: usize) -> Option<(Layout, usize)> {
         // Buckets are accessed relatively from the start
         // of `TableInfo` and not from the start of the layout.
-        // There can in theory be padding at the start of the layout if the alignment of `T` is
-        // smaller than the alignment of `TableInfo`, but that doesn't currently occur.
+        // There can in theory be padding at the start of the layout
+        // if the alignment of `T` is smaller than the larger alignment of
+        // `TableInfo` and `Group`, but that doesn't currently occur.
         let buckets_size = mem::size_of::<T>().checked_mul(bucket_count)?;
 
         // Align TableInfo to Group so there's a fixed offset for use in `TableInfoRef::ctrl`
