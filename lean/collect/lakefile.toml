@@ -1,0 +1,6 @@
+name = "Collect"
+version = "0.1.0"
+defaultTargets = ["Collect"]
+
+[[lean_lib]]
+name = "Collect"

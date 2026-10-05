@@ -843,3 +843,64 @@ fn garbage_from_an_exited_thread_waits_for_a_collect_call() {
     collect::collect();
     assert_eq!(freed.load(Ordering::SeqCst), 1);
 }
+
+/// Two threads that take turns doing `collect; release; pin` must not keep `busy_count` from
+/// reaching 0 (`Fair.fair` in `lean/collect` covers such schedules).
+#[test]
+fn register_churn_does_not_starve() {
+    let _test = enter_test();
+
+    let free = Arc::new(AtomicUsize::new(0));
+
+    collect::pin(|_| ());
+
+    let registered = Arc::new(Barrier::new(2));
+    let turn = Arc::new(Barrier::new(2));
+    let checked = Arc::new(Barrier::new(2));
+
+    let worker = {
+        let registered = registered.clone();
+        let turn = turn.clone();
+        let checked = checked.clone();
+
+        thread::spawn(move || {
+            collect::pin(|_| ());
+            registered.wait();
+
+            for _ in 0..4 {
+                turn.wait();
+                collect::collect();
+                collect::release();
+                collect::pin(|_| ());
+                turn.wait();
+            }
+
+            // Stay registered until the main thread has checked the result, so the release
+            // below cannot be what completes the epoch.
+            checked.wait();
+            collect::release();
+        })
+    };
+
+    registered.wait();
+
+    let free2 = free.clone();
+    unsafe {
+        collect::defer_unchecked(move || {
+            free2.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    for _ in 0..4 {
+        turn.wait();
+        turn.wait();
+        collect::collect();
+        collect::release();
+        collect::pin(|_| ());
+    }
+
+    assert_eq!(free.load(Ordering::SeqCst), 1);
+
+    checked.wait();
+    worker.join().unwrap();
+}

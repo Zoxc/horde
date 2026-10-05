@@ -1,0 +1,10 @@
+name = "SyncTable"
+version = "0.1.0"
+defaultTargets = ["SyncTable"]
+
+[[lean_lib]]
+name = "SyncTable"
+
+[[require]]
+name = "Collect"
+path = "../collect"

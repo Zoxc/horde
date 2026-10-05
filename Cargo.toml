@@ -9,6 +9,7 @@ repository = "https://github.com/Zoxc/horde"
 keywords = ["atomic", "concurrent", "hashmap", "lock-free"]
 categories = ["concurrency", "data-structures"]
 publish = false
+exclude = ["lean/"]
 
 [lib]
 crate-type = ["rlib"]

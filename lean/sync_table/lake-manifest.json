@@ -1,0 +1,13 @@
+{"version": "1.2.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"type": "path",
+   "scope": "",
+   "name": "Collect",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../collect",
+   "configFile": "lakefile.toml"}],
+ "name": "SyncTable",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

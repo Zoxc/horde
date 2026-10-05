@@ -498,13 +498,18 @@ impl Collector {
         }
     }
 
-    /// Registers the current thread as a busy participant in the current epoch.
+    /// Registers the current thread as a participant in the current epoch.
     ///
     /// Returns `true` if the collector has callbacks.
     #[must_use]
     fn register(&mut self, thread_id: ThreadId) -> bool {
-        self.busy_count += 1;
-        assert!(self.threads.insert(thread_id, ThreadState::Busy).is_none());
+        let state = if self.busy_count == 0 {
+            self.busy_count = 1;
+            ThreadState::Busy
+        } else {
+            ThreadState::Quiet
+        };
+        assert!(self.threads.insert(thread_id, state).is_none());
 
         !(self.pending.is_empty()
             && self.previous_deferred.is_empty()

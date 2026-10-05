@@ -628,12 +628,16 @@ fn concurrent_get_and_insert() {
                     Some(2)
                 );
             });
+
+            release();
         });
 
         scope.spawn(|| {
             barrier.wait();
             assert!(table.lock().write().insert(1, 2, None));
             barrier.wait();
+
+            release();
         });
     });
 }
@@ -662,6 +666,8 @@ fn concurrent_get_and_remove() {
             pin(|pin| {
                 assert!(table.read(pin).get(&1, None).is_none());
             });
+
+            release();
         });
 
         scope.spawn(|| {
@@ -675,6 +681,8 @@ fn concurrent_get_and_remove() {
                 Some(2)
             );
             barrier.wait();
+
+            release();
         });
     });
 }
@@ -706,6 +714,8 @@ fn concurrent_insert_remove_and_get() {
                     Some(4)
                 );
             });
+
+            release();
         });
 
         scope.spawn(|| {
@@ -721,6 +731,8 @@ fn concurrent_insert_remove_and_get() {
             );
             assert!(table.lock().write().insert(2, 4, None));
             barrier.wait();
+
+            release();
         });
     });
 }
