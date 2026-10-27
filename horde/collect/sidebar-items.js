@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["collect","defer","defer_unchecked","pin","release"],"struct":["Pin"]};
