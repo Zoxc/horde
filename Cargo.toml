@@ -19,7 +19,7 @@ default = []
 nightly = []
 
 [dependencies]
-parking_lot = "0.12.5"
+parking_lot = "0.13"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(code)'] }
